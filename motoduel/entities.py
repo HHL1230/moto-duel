@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 
 from . import config as cfg
@@ -113,7 +114,6 @@ class Bike:
         self.floats.append(FloatText(text, color, self.x, self.y - 44))
 
     def emit(self, n: int, color: tuple, spread: float = 160.0, up: float = 120.0) -> None:
-        import random
         for _ in range(n):
             self.particles.append(
                 Particle(
