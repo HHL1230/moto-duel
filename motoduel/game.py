@@ -36,6 +36,11 @@ class Game:
         pygame.init()
         pygame.display.set_caption(cfg.TITLE)
         self.screen = pygame.display.set_mode((cfg.SCREEN_W, cfg.SCREEN_H))
+        # 關閉 SDL 文字輸入，避免中文輸入法攔截空白鍵導致選單無反應
+        try:
+            pygame.key.stop_text_input()
+        except AttributeError:
+            pass
         self.clock = pygame.time.Clock()
         self._splash("音效合成中…")
         self.save = SaveData()
@@ -140,11 +145,24 @@ class Game:
 
     # ============================================================== 輸入
     def handle_events(self) -> None:
+        """處理事件。
+
+        中文輸入法（IME）啟用時，Windows 可能吃掉空白鍵而只送出 TEXTINPUT，
+        因此保留一條備援路徑，把「輸入了一個空白字元」視為按下空白鍵。
+        """
+        space_from_key = False
+        pending_text_space = False
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 self.running = False
             elif e.type == pygame.KEYDOWN:
+                if e.key == pygame.K_SPACE:
+                    space_from_key = True
                 self.on_key(e.key)
+            elif e.type == pygame.TEXTINPUT and e.text and e.text.strip(" \u3000") == "":
+                pending_text_space = True
+        if pending_text_space and not space_from_key:
+            self.on_key(pygame.K_SPACE)
 
     def on_key(self, key: int) -> None:
         if key == pygame.K_m:

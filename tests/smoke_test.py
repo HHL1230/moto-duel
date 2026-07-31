@@ -250,6 +250,53 @@ def test_round_flow() -> None:
         check(game.state == 0, "結算後可回主選單")
 
 
+def test_input_events() -> None:
+    print("\n== 事件處理（輸入法相容） ==")
+    game = Game()
+    import tempfile
+    from pathlib import Path
+    game.save = SaveData(Path(tempfile.mkdtemp()) / "save.json")
+
+    pygame.event.clear()
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE,
+                                         mod=0, unicode=" ", scancode=44))
+    game.handle_events()
+    check(game.state == 1, "KEYDOWN 空白鍵可開始對決")
+
+    # 中文輸入法情境：只送出 TEXTINPUT 而沒有 KEYDOWN
+    game.state = 0
+    game.menu_index = 1
+    pygame.event.clear()
+    pygame.event.post(pygame.event.Event(pygame.TEXTINPUT, text=" "))
+    game.handle_events()
+    check(game.state == 1, "僅 TEXTINPUT 空白字元亦可觸發（輸入法備援）")
+
+    # 全形空白同樣視為空白鍵
+    game.state = 0
+    pygame.event.clear()
+    pygame.event.post(pygame.event.Event(pygame.TEXTINPUT, text="\u3000"))
+    game.handle_events()
+    check(game.state == 1, "全形空白亦可觸發")
+
+    # 同時收到兩者時不可重複觸發
+    game.state = 3
+    game.round_index = 0
+    pygame.event.clear()
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE,
+                                         mod=0, unicode=" ", scancode=44))
+    pygame.event.post(pygame.event.Event(pygame.TEXTINPUT, text=" "))
+    game.handle_events()
+    check(game.round_index == 1, "KEYDOWN 與 TEXTINPUT 同時出現不會重複觸發")
+
+    # 一般文字輸入不應被誤判
+    game.state = 0
+    pygame.event.clear()
+    pygame.event.post(pygame.event.Event(pygame.TEXTINPUT, text="a"))
+    game.handle_events()
+    check(game.state == 0, "一般文字輸入不會誤觸發")
+    pygame.event.clear()
+
+
 def test_render_frames() -> None:
     print("\n== 畫面繪製 ==")
     game = Game()
@@ -372,6 +419,7 @@ def main() -> int:
     test_achievements()
     test_round_flow()
     test_menu_navigation()
+    test_input_events()
     test_ai_riders()
     test_audio()
     test_render_frames()

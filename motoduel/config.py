@@ -11,7 +11,7 @@ DIVIDER_H = 6
 VIEW_W = SCREEN_W
 VIEW_H = (SCREEN_H - DIVIDER_H) // 2
 
-TITLE = "MOTO DUEL - 雙人越野機車對決"
+TITLE = "MOTO DUEL - 越野機車對決（單人 / 雙人）"
 
 # ---------------------------------------------------------------- 賽道
 TERRAIN_STEP = 12           # 地形取樣間距 (px)
