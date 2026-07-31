@@ -43,7 +43,7 @@ uv run python -m motoduel
 | 油門 | `W` 或 `↑` | `↑` |
 | 煞車／後退 | `S` 或 `↓` | `↓` |
 | 空中後傾／前傾 | `A` / `D` 或 `←` / `→` | `←` / `→` |
-| 氮氣 | 左 `Shift`、左 `Ctrl`、右 `Shift` | 右 `Ctrl`（或右 `Shift`、`Enter`、`Num 0`） |
+| 氮氣 | 左 `Ctrl`（單人模式亦可用右 `Ctrl`） | 右 `Ctrl`（或右 `Shift`、`Enter`、`Num 0`） |
 
 > 單人模式中，玩家 1 可同時使用 WASD 或方向鍵操作。
 

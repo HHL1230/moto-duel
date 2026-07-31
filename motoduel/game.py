@@ -23,10 +23,10 @@ MENU_ITEMS = ["單人模式（對戰電腦）", "雙人模式（同機對戰）"
 
 CONTROLS = [
     # (label, gas, brake, lean_back, lean_fwd, nitro)
-    ("玩家 1", pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_LSHIFT),
+    ("玩家 1", pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_LCTRL),
     ("玩家 2", pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_RCTRL),
 ]
-NITRO_ALT = {0: (pygame.K_LCTRL,), 1: (pygame.K_RSHIFT, pygame.K_KP0, pygame.K_RETURN)}
+NITRO_ALT = {0: (), 1: (pygame.K_RSHIFT, pygame.K_KP0, pygame.K_RETURN)}
 
 FINISH_GRACE = 15.0     # 首位完賽後，另一位玩家的寬限秒數
 
@@ -263,7 +263,7 @@ class Game:
             p1["brake"] = p1["brake"] or keys[pygame.K_DOWN]
             p1["lean_back"] = p1["lean_back"] or keys[pygame.K_LEFT]
             p1["lean_fwd"] = p1["lean_fwd"] or keys[pygame.K_RIGHT]
-            p1["nitro"] = p1["nitro"] or keys[pygame.K_RSHIFT] or keys[pygame.K_RCTRL]
+            p1["nitro"] = p1["nitro"] or keys[pygame.K_RCTRL]
             out[1] = self.ai.think(dt) if self.ai else dict(out[1])
         return out
 
@@ -668,7 +668,7 @@ class Game:
         # ---- 操作說明
         cols = [
             (700, cfg.PLAYER_COLORS[0], "玩家 1",
-             ["W / ↑　油門", "S / ↓　煞車", "A D / ← →　後傾 前傾", "左Shift / 右Shift　氮氣"]),
+             ["W / ↑　油門", "S / ↓　煞車", "A D / ← →　後傾 前傾", "左Ctrl / 右Ctrl　氮氣"]),
             (990, cfg.PLAYER_COLORS[1], "玩家 2（雙人）",
              ["↑　油門", "↓　煞車", "← / →　後傾 / 前傾", "右 Ctrl　氮氣"]),
         ]
