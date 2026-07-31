@@ -9,10 +9,17 @@ import pygame
 from . import config as cfg
 from . import render as R
 from .achievements import ACHIEVEMENTS, SaveData
+from .ai import AIRider, DIFFICULTIES, DIFFICULTY_ORDER, make_ai_name
+from .audio import Audio
 from .entities import Bike
 from .terrain import Terrain
 
 MENU, COUNTDOWN, RACING, ROUND_END, MATCH_END, ACHIEVE_VIEW, PAUSED = range(7)
+
+MODE_1P = "1p"
+MODE_2P = "2p"
+
+MENU_ITEMS = ["單人模式（對戰電腦）", "雙人模式（同機對戰）", "成就一覽", "離開遊戲"]
 
 CONTROLS = [
     # (label, gas, brake, lean_back, lean_fwd, nitro)
@@ -25,12 +32,14 @@ FINISH_GRACE = 15.0     # 首位完賽後，另一位玩家的寬限秒數
 
 
 class Game:
-    def __init__(self) -> None:
+    def __init__(self, audio_enabled: bool = True) -> None:
         pygame.init()
         pygame.display.set_caption(cfg.TITLE)
         self.screen = pygame.display.set_mode((cfg.SCREEN_W, cfg.SCREEN_H))
         self.clock = pygame.time.Clock()
+        self._splash("音效合成中…")
         self.save = SaveData()
+        self.audio = Audio(audio_enabled)
         self.views = [
             pygame.Surface((cfg.VIEW_W, cfg.VIEW_H)),
             pygame.Surface((cfg.VIEW_W, cfg.VIEW_H)),
@@ -39,10 +48,17 @@ class Game:
             R.make_sky(cfg.VIEW_W, cfg.VIEW_H, False),
             R.make_sky(cfg.VIEW_W, cfg.VIEW_H, True),
         ]
+        self.full_view = pygame.Surface((cfg.SCREEN_W, cfg.SCREEN_H))
+        self.full_sky = R.make_sky(cfg.SCREEN_W, cfg.SCREEN_H, False)
         self.state = MENU
         self.prev_state = MENU
         self.running = True
         self.t = 0.0
+
+        self.mode = MODE_2P
+        self.difficulty = "normal"
+        self.menu_index = 0
+        self.ai: AIRider | None = None
 
         self.terrain: Terrain | None = None
         self.bikes: list[Bike] = []
@@ -53,14 +69,29 @@ class Game:
         self.match_scores = [0, 0]
         self.race_time = 0.0
         self.countdown = 0.0
+        self.countdown_mark = 4
         self.finish_deadline: float | None = None
         self.round_result: dict | None = None
         self.new_achievements: list = []
         self.ob_cooldown: dict[tuple[int, int], float] = {}
         self.achieve_scroll = 0
+        self.audio.play_music("menu")
+
+    def _splash(self, text: str) -> None:
+        self.screen.fill(cfg.C_PANEL)
+        R.draw_text(self.screen, "MOTO DUEL", 64, cfg.SCREEN_W // 2,
+                    cfg.SCREEN_H // 2 - 50, cfg.C_GOLD, center=True)
+        R.draw_text(self.screen, text, 24, cfg.SCREEN_W // 2,
+                    cfg.SCREEN_H // 2 + 30, cfg.C_DIM, center=True)
+        pygame.display.flip()
+
+    @property
+    def player_count(self) -> int:
+        return 1 if self.mode == MODE_1P else 2
 
     # ============================================================== 賽事建立
-    def start_match(self) -> None:
+    def start_match(self, mode: str = MODE_2P) -> None:
+        self.mode = mode
         self.round_index = 0
         self.round_wins = [0, 0]
         self.match_scores = [0, 0]
@@ -70,6 +101,11 @@ class Game:
         seed = random.randrange(1, 10_000_000)
         self.terrain = Terrain(seed)
         self.bikes = [Bike(0, self.terrain), Bike(1, self.terrain)]
+        if self.mode == MODE_1P:
+            self.bikes[1].name = make_ai_name(self.difficulty)
+            self.ai = AIRider(self.bikes[1], self.terrain, self.difficulty, seed)
+        else:
+            self.ai = None
         # 落後補償：上一回合輸的一方獲得起始氮氣加成
         if self.round_index > 0 and self.round_wins[0] != self.round_wins[1]:
             loser = 0 if self.round_wins[0] < self.round_wins[1] else 1
@@ -78,15 +114,19 @@ class Game:
             )
             self.bikes[loser].add_float("追趕補給！", cfg.C_CYAN)
         for i, b in enumerate(self.bikes):
-            self.cams[i] = b.x - cfg.VIEW_W * 0.34
-            self.cam_y[i] = b.y - cfg.VIEW_H * 0.55
+            view_w = cfg.SCREEN_W if self.mode == MODE_1P else cfg.VIEW_W
+            view_h = cfg.SCREEN_H if self.mode == MODE_1P else cfg.VIEW_H
+            self.cams[i] = b.x - view_w * 0.34
+            self.cam_y[i] = b.y - view_h * 0.55
         self.race_time = 0.0
         self.countdown = 3.2
+        self.countdown_mark = 4
         self.finish_deadline = None
         self.round_result = None
         self.new_achievements = []
         self.ob_cooldown.clear()
         self.state = COUNTDOWN
+        self.audio.play_music("race")
 
     # ============================================================== 主迴圈
     def run(self) -> None:
@@ -107,36 +147,46 @@ class Game:
                 self.on_key(e.key)
 
     def on_key(self, key: int) -> None:
+        if key == pygame.K_m:
+            muted = self.audio.toggle_mute()
+            if not muted:
+                self.audio.play("ui")
+            return
+
         if key == pygame.K_ESCAPE:
             if self.state in (MENU,):
                 self.running = False
             elif self.state in (ACHIEVE_VIEW, PAUSED):
+                self.audio.play("ui")
                 self.state = self.prev_state
             else:
+                self.audio.play("ui")
+                self.audio.stop_engine()
+                self.audio.play_music("menu")
                 self.state = MENU
             return
 
         if self.state == MENU:
-            if key == pygame.K_SPACE:
-                self.start_match()
-            elif key == pygame.K_a:
-                self.prev_state = MENU
-                self.achieve_scroll = 0
-                self.state = ACHIEVE_VIEW
+            self.menu_key(key)
         elif self.state == ACHIEVE_VIEW:
             if key in (pygame.K_a, pygame.K_SPACE):
+                self.audio.play("ui")
                 self.state = self.prev_state
         elif self.state in (COUNTDOWN, RACING):
             if key == pygame.K_p:
                 self.prev_state = self.state
                 self.state = PAUSED
+                self.audio.stop_engine()
+                self.audio.play("ui")
             elif key == pygame.K_r:
                 self.start_round()
         elif self.state == PAUSED:
             if key == pygame.K_p:
+                self.audio.play("ui")
                 self.state = self.prev_state
         elif self.state == ROUND_END:
             if key == pygame.K_SPACE:
+                self.audio.play("ui")
                 self.round_index += 1
                 if self.round_index >= cfg.ROUNDS_PER_MATCH:
                     self.finish_match()
@@ -144,9 +194,39 @@ class Game:
                     self.start_round()
         elif self.state == MATCH_END:
             if key == pygame.K_SPACE:
+                self.audio.play("ui")
+                self.audio.play_music("menu")
                 self.state = MENU
 
-    def read_inputs(self) -> list[dict]:
+    def menu_key(self, key: int) -> None:
+        if key in (pygame.K_UP, pygame.K_w):
+            self.menu_index = (self.menu_index - 1) % len(MENU_ITEMS)
+            self.audio.play("ui")
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            self.menu_index = (self.menu_index + 1) % len(MENU_ITEMS)
+            self.audio.play("ui")
+        elif key in (pygame.K_LEFT, pygame.K_a) and self.menu_index == 0:
+            i = DIFFICULTY_ORDER.index(self.difficulty)
+            self.difficulty = DIFFICULTY_ORDER[(i - 1) % len(DIFFICULTY_ORDER)]
+            self.audio.play("ui")
+        elif key in (pygame.K_RIGHT, pygame.K_d) and self.menu_index == 0:
+            i = DIFFICULTY_ORDER.index(self.difficulty)
+            self.difficulty = DIFFICULTY_ORDER[(i + 1) % len(DIFFICULTY_ORDER)]
+            self.audio.play("ui")
+        elif key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.audio.play("ui")
+            if self.menu_index == 0:
+                self.start_match(MODE_1P)
+            elif self.menu_index == 1:
+                self.start_match(MODE_2P)
+            elif self.menu_index == 2:
+                self.prev_state = MENU
+                self.achieve_scroll = 0
+                self.state = ACHIEVE_VIEW
+            else:
+                self.running = False
+
+    def read_inputs(self, dt: float = 1 / 60) -> list[dict]:
         keys = pygame.key.get_pressed()
         out = []
         for i, (_, gas, brake, lb, lf, nitro) in enumerate(CONTROLS):
@@ -158,29 +238,60 @@ class Game:
                 "lean_fwd": keys[lf],
                 "nitro": nitro_down,
             })
+        if self.mode == MODE_1P:
+            # 單人模式：玩家 1 沿用方向鍵之外的配置，並額外接受方向鍵操作
+            p1 = out[0]
+            p1["gas"] = p1["gas"] or keys[pygame.K_UP]
+            p1["brake"] = p1["brake"] or keys[pygame.K_DOWN]
+            p1["lean_back"] = p1["lean_back"] or keys[pygame.K_LEFT]
+            p1["lean_fwd"] = p1["lean_fwd"] or keys[pygame.K_RIGHT]
+            p1["nitro"] = p1["nitro"] or keys[pygame.K_RSHIFT] or keys[pygame.K_RCTRL]
+            out[1] = self.ai.think(dt) if self.ai else dict(out[1])
         return out
 
     # ============================================================== 更新
     def update(self, dt: float) -> None:
         if self.state == COUNTDOWN:
             self.countdown -= dt
+            mark = int(math.ceil(self.countdown))
+            if mark < self.countdown_mark:
+                self.countdown_mark = mark
+                self.audio.play("beep" if mark >= 1 else "go")
             for i, b in enumerate(self.bikes):
                 self._update_camera(i, b, dt * 4)
             if self.countdown <= 0:
                 self.countdown = 0.0
                 self.state = RACING
+            self._update_engine_audio()
         elif self.state == RACING:
             self.update_race(dt)
+            self._update_engine_audio()
+
+    def _update_engine_audio(self) -> None:
+        if not self.bikes:
+            self.audio.stop_engine()
+            return
+        b = self.bikes[0]
+        ratio = max(0.0, min(1.0, b.vx / cfg.MAX_SPEED))
+        self.audio.update_engine(ratio, b.throttle_on, not b.finished and not b.crashed)
+
+    def _consume_events(self) -> None:
+        for i, bike in enumerate(self.bikes):
+            vol = 1.0 if i == 0 or self.mode == MODE_2P else 0.55
+            for name in bike.events:
+                self.audio.play(name, vol)
+            bike.events.clear()
 
     def update_race(self, dt: float) -> None:
         self.race_time += dt
-        inputs = self.read_inputs()
+        inputs = self.read_inputs(dt)
 
         for i, bike in enumerate(self.bikes):
             bike.update(dt, inputs[i], self.race_time)
             self.handle_collisions(i, bike, dt)
             self.check_finish(i, bike)
             self._update_camera(i, bike, dt)
+        self._consume_events()
 
         # 賽程後段落後紀錄（供逆轉勝成就）
         for i, bike in enumerate(self.bikes):
@@ -205,8 +316,10 @@ class Game:
             self.end_round()
 
     def _update_camera(self, i: int, bike: Bike, dt: float) -> None:
-        target_x = bike.x - cfg.VIEW_W * 0.34
-        target_y = bike.y - cfg.VIEW_H * 0.55
+        view_w = cfg.SCREEN_W if self.mode == MODE_1P else cfg.VIEW_W
+        view_h = cfg.SCREEN_H if self.mode == MODE_1P else cfg.VIEW_H
+        target_x = bike.x - view_w * 0.34
+        target_y = bike.y - view_h * 0.55
         lerp = min(1.0, 7.0 * dt)
         self.cams[i] += (target_x - self.cams[i]) * lerp
         self.cam_y[i] += (target_y - self.cam_y[i]) * lerp
@@ -231,7 +344,7 @@ class Game:
             elif ob.kind == "rock":
                 if bike.y > top:
                     self.ob_cooldown[key] = 1.2
-                    if bike.speed > 430 and bike.shield_timer <= 0:
+                    if bike.speed > cfg.ROCK_SAFE_SPEED and bike.shield_timer <= 0:
                         bike.crash("撞上巨石！")
                     elif bike.shield_timer > 0:
                         bike.add_float("護盾撞碎巨石", cfg.C_PURPLE)
@@ -240,14 +353,23 @@ class Game:
                         bike.vx *= 0.35
                         bike.vy = min(bike.vy, -160)
                         bike.add_float("顛簸！", cfg.C_DIM)
+                        bike.events.append("thud")
             elif ob.kind == "spike":
                 if bike.y > top:
                     self.ob_cooldown[key] = 1.2
                     if bike.shield_timer > 0:
                         bike.shield_timer = 0.0
                         bike.add_float("護盾破裂！", cfg.C_PURPLE)
-                    else:
+                        bike.events.append("thud")
+                    elif bike.speed > cfg.SPIKE_SAFE_SPEED:
                         bike.crash("尖刺陷阱！")
+                    else:
+                        bike.vx *= 0.3
+                        bike.vy = min(bike.vy, -120)
+                        bike.stats.score += cfg.SCORE_SPIKE_GRAZE
+                        bike.add_float(f"擦過尖刺 {cfg.SCORE_SPIKE_GRAZE}", cfg.C_RED)
+                        bike.emit(8, cfg.C_RED, spread=120, up=90)
+                        bike.events.append("thud")
             elif ob.kind == "boost":
                 if bike.y > ground_y - 40 and bike.boost_timer <= 0:
                     self.ob_cooldown[key] = 0.8
@@ -266,15 +388,18 @@ class Game:
                 bike.stats.score += cfg.SCORE_COIN
                 bike.add_float(f"+{cfg.SCORE_COIN}", cfg.C_GOLD)
                 bike.emit(5, cfg.C_GOLD, spread=90, up=90)
+                bike.events.append("coin")
             elif pk.kind == "nitro":
                 bike.nitro = min(cfg.NITRO_MAX, bike.nitro + cfg.NITRO_PICKUP)
                 bike.add_float("氮氣 +45", cfg.C_CYAN)
                 bike.emit(6, cfg.C_CYAN, spread=90, up=90)
+                bike.events.append("nitro_pickup")
             else:
                 bike.shield_timer = cfg.SHIELD_TIME
                 bike.stats.shields += 1
                 bike.add_float("護盾啟動！", cfg.C_PURPLE)
                 bike.emit(8, cfg.C_PURPLE, spread=110, up=110)
+                bike.events.append("shield")
 
     def check_finish(self, idx: int, bike: Bike) -> None:
         if bike.finished or bike.x < cfg.TRACK_LENGTH:
@@ -284,6 +409,7 @@ class Game:
         bonus = int(max(0.0, cfg.PAR_TIME - self.race_time) * cfg.SCORE_FINISH_TIME_BONUS)
         bike.stats.score += bonus
         bike.add_float(f"完賽！ +{bonus}", cfg.C_GOLD)
+        bike.events.append("finish")
         if self.finish_deadline is None:
             self.finish_deadline = self.race_time + FINISH_GRACE
 
@@ -310,6 +436,8 @@ class Game:
         self.save.record_race([b.stats for b in self.bikes], winner)
         self.new_achievements = []
         for i, b in enumerate(self.bikes):
+            if self.mode == MODE_1P and i == 1:
+                continue    # 電腦對手不解成就
             ctx = {
                 "won": winner == i,
                 "coins": b.stats.coins,
@@ -335,6 +463,10 @@ class Game:
         self.save.save()
         self.round_result = {"winner": winner}
         self.state = ROUND_END
+        self.audio.stop_engine()
+        self.audio.play_music("menu")
+        if self.new_achievements:
+            self.audio.play("unlock")
 
     def finish_match(self) -> None:
         w0, w1 = self.round_wins
@@ -343,17 +475,21 @@ class Game:
         else:
             champ = 0 if w0 > w1 else 1
         if max(w0, w1) == cfg.ROUNDS_PER_MATCH:
-            ctx = {k: 0 for k in (
-                "coins", "flips", "crashes", "top_speed", "nitro_time", "boosts",
-                "shields", "score", "air_time", "best_flip_combo", "total_races",
-                "total_wins", "total_coins", "total_flips")}
-            ctx.update({"won": True, "comeback": False, "finish_time": None,
-                        "perfect_match": True})
-            for ach in self.save.evaluate(ctx):
-                self.new_achievements.append((champ, ach))
-            self.save.save()
+            if not (self.mode == MODE_1P and champ == 1):
+                ctx = {k: 0 for k in (
+                    "coins", "flips", "crashes", "top_speed", "nitro_time", "boosts",
+                    "shields", "score", "air_time", "best_flip_combo", "total_races",
+                    "total_wins", "total_coins", "total_flips")}
+                ctx.update({"won": True, "comeback": False, "finish_time": None,
+                            "perfect_match": True})
+                for ach in self.save.evaluate(ctx):
+                    self.new_achievements.append((champ, ach))
+                self.save.save()
         self.match_champion = champ
         self.state = MATCH_END
+        self.audio.stop_engine()
+        self.audio.play_music("menu")
+        self.audio.play("finish")
 
     # ============================================================== 繪製
     def draw(self) -> None:
@@ -374,6 +510,44 @@ class Game:
 
     # -------------------------------------------------------------- 賽中
     def draw_race(self) -> None:
+        if self.mode == MODE_1P:
+            self.draw_race_solo()
+        else:
+            self.draw_race_split()
+
+    def draw_race_solo(self) -> None:
+        assert self.terrain is not None
+        view = self.full_view
+        bike, rival = self.bikes[0], self.bikes[1]
+        view.blit(self.full_sky, (0, 0))
+        cam_x, cam_y = self.cams[0], self.cam_y[0]
+        R.draw_parallax(view, cam_x, cfg.SCREEN_H)
+        R.draw_terrain(view, self.terrain, cam_x, cam_y)
+        R.draw_obstacles(view, self.terrain, cam_x, cam_y)
+        R.draw_pickups(view, self.terrain, cam_x, cam_y, 0, self.t)
+        R.draw_finish(view, self.terrain, cam_x, cam_y)
+        if abs(rival.x - bike.x) < cfg.SCREEN_W:
+            R.draw_bike(view, rival, cam_x, cam_y)
+            R.draw_particles(view, rival, cam_x, cam_y)
+        R.draw_particles(view, bike, cam_x, cam_y)
+        R.draw_bike(view, bike, cam_x, cam_y)
+        R.draw_floats(view, bike, cam_x, cam_y)
+        self.draw_offscreen_arrow(view, bike, rival, cam_x)
+        R.draw_hud(view, bike, rival, self.race_time, self.rank_of(0), self.countdown)
+        self.screen.blit(view, (0, 0))
+        R.draw_text(self.screen,
+                    f"回合 {self.round_index + 1}/{cfg.ROUNDS_PER_MATCH}   "
+                    f"{self.round_wins[0]} - {self.round_wins[1]}   "
+                    f"對手：{rival.name}",
+                    20, cfg.SCREEN_W // 2, cfg.SCREEN_H - 34, cfg.C_DIM, center=True)
+        self.draw_mute_badge()
+
+    def draw_mute_badge(self) -> None:
+        if self.audio.muted:
+            R.draw_text(self.screen, "[ 靜音中 - 按 M 開啟 ]", 18, 16,
+                        cfg.SCREEN_H - 30, cfg.C_DIM)
+
+    def draw_race_split(self) -> None:
         assert self.terrain is not None
         for i, bike in enumerate(self.bikes):
             view = self.views[i]
@@ -400,6 +574,7 @@ class Game:
         R.draw_text(self.screen, f"回合 {self.round_index + 1}/{cfg.ROUNDS_PER_MATCH}   "
                                  f"{self.round_wins[0]} - {self.round_wins[1]}",
                     16, cfg.SCREEN_W - 90, cfg.VIEW_H - 16, cfg.C_DIM, center=True)
+        self.draw_mute_badge()
 
     def rank_of(self, i: int) -> int:
         b, r = self.bikes[i], self.bikes[1 - i]
@@ -416,15 +591,16 @@ class Game:
 
     def draw_offscreen_arrow(self, view, bike: Bike, rival: Bike, cam_x: float) -> None:
         sx = rival.x - cam_x
-        if 0 <= sx <= cfg.VIEW_W:
+        vw, vh = view.get_width(), view.get_height()
+        if 0 <= sx <= vw:
             return
-        y = cfg.VIEW_H // 2
+        y = vh // 2
         if sx < 0:
             pts = [(28, y), (58, y - 16), (58, y + 16)]
             tx = 74
         else:
-            pts = [(cfg.VIEW_W - 28, y), (cfg.VIEW_W - 58, y - 16), (cfg.VIEW_W - 58, y + 16)]
-            tx = cfg.VIEW_W - 92
+            pts = [(vw - 28, y), (vw - 58, y - 16), (vw - 58, y + 16)]
+            tx = vw - 92
         pygame.draw.polygon(view, rival.color, pts)
         R.draw_text(view, f"{abs(rival.x - bike.x) / 10:.0f}m", 16, tx, y - 10, rival.color)
 
@@ -442,50 +618,75 @@ class Game:
         self.screen.blit(self.skies[0], (0, 0))
         self.screen.blit(self.skies[1], (0, cfg.VIEW_H))
         veil = pygame.Surface((cfg.SCREEN_W, cfg.SCREEN_H), pygame.SRCALPHA)
-        veil.fill((8, 10, 18, 150))
+        veil.fill((8, 10, 18, 165))
         self.screen.blit(veil, (0, 0))
 
-        R.draw_text(self.screen, "MOTO DUEL", 82, cfg.SCREEN_W // 2, 90, cfg.C_GOLD, center=True)
-        R.draw_text(self.screen, "雙人越野機車對決", 32, cfg.SCREEN_W // 2, 156,
+        R.draw_text(self.screen, "MOTO DUEL", 76, cfg.SCREEN_W // 2, 32, cfg.C_GOLD, center=True)
+        R.draw_text(self.screen, "越野機車對決　單人 / 雙人", 26, cfg.SCREEN_W // 2, 106,
                     cfg.C_WHITE, center=True)
 
+        # ---- 選單項目
+        mx, my = 90, 168
+        for i, label in enumerate(MENU_ITEMS):
+            sel = i == self.menu_index
+            box = pygame.Rect(mx, my + i * 62, 480, 52)
+            pygame.draw.rect(self.screen, (26, 30, 48) if sel else (16, 18, 28), box,
+                             border_radius=10)
+            pygame.draw.rect(self.screen, cfg.C_GOLD if sel else (46, 50, 66), box,
+                             3 if sel else 2, border_radius=10)
+            col = cfg.C_GOLD if sel else cfg.C_WHITE
+            R.draw_text(self.screen, ("> " if sel else "   ") + label, 26,
+                        mx + 18, my + i * 62 + 12, col)
+        # 難度列（僅單人）
+        d = DIFFICULTIES[self.difficulty]
+        dsel = self.menu_index == 0
+        R.draw_text(self.screen, f"<  電腦難度：{d['name']}  >", 24, mx + 18,
+                    my + len(MENU_ITEMS) * 62 + 14,
+                    cfg.C_CYAN if dsel else (70, 74, 92))
+        R.draw_text(self.screen, d["hint"], 19, mx + 18,
+                    my + len(MENU_ITEMS) * 62 + 46,
+                    cfg.C_DIM if dsel else (60, 64, 80))
+
+        # ---- 操作說明
         cols = [
-            (cfg.SCREEN_W // 2 - 330, cfg.PLAYER_COLORS[0], "玩家 1（左）",
-             ["W  油門", "S  煞車", "A / D  後傾 / 前傾", "左 Shift  氮氣"]),
-            (cfg.SCREEN_W // 2 + 60, cfg.PLAYER_COLORS[1], "玩家 2（右）",
-             ["↑  油門", "↓  煞車", "← / →  後傾 / 前傾", "右 Ctrl  氮氣"]),
+            (700, cfg.PLAYER_COLORS[0], "玩家 1",
+             ["W / ↑　油門", "S / ↓　煞車", "A D / ← →　後傾 前傾", "左Shift / 右Shift　氮氣"]),
+            (990, cfg.PLAYER_COLORS[1], "玩家 2（雙人）",
+             ["↑　油門", "↓　煞車", "← / →　後傾 / 前傾", "右 Ctrl　氮氣"]),
         ]
         for x, color, title, lines in cols:
-            pygame.draw.rect(self.screen, (14, 16, 26), (x - 20, 200, 290, 190),
+            pygame.draw.rect(self.screen, (14, 16, 26), (x - 18, 168, 272, 190),
                              border_radius=12)
-            pygame.draw.rect(self.screen, color, (x - 20, 200, 290, 190), 3, border_radius=12)
-            R.draw_text(self.screen, title, 26, x, 214, color)
+            pygame.draw.rect(self.screen, color, (x - 18, 168, 272, 190), 3, border_radius=12)
+            R.draw_text(self.screen, title, 24, x, 180, color)
             for k, line in enumerate(lines):
-                R.draw_text(self.screen, line, 22, x, 254 + k * 32, cfg.C_WHITE)
+                R.draw_text(self.screen, line, 19, x, 218 + k * 32, cfg.C_WHITE)
 
         tips = [
-            "空中用左右鍵翻滾可獲得分數與氮氣；落地角度不對會摔車。",
-            "綠色加速板衝刺、金幣加分、氮氣罐補給、紫色護盾抵擋一次傷害。",
-            f"三回合制對決，取得最多回合勝利者獲勝。",
+            "空中用左右鍵翻滾可獲得分數與氮氣，落地角度不對會摔車。",
+            "加速板衝刺、金幣加分、氮氣罐補給、護盾擋一次傷害。",
+            "高速撞巨石或尖刺會摔車，減速通過只顛簸扣分。",
+            "三回合制對決，取得最多回合勝利者獲勝。",
         ]
         for k, line in enumerate(tips):
-            R.draw_text(self.screen, line, 20, cfg.SCREEN_W // 2, 412 + k * 30,
-                        cfg.C_DIM, center=True)
+            R.draw_text(self.screen, line, 18, 686, 388 + k * 28, cfg.C_DIM)
 
-        d = self.save.data
-        best = f"{d['best_time']:.2f}s" if d.get("best_time") else "—"
+        d2 = self.save.data
+        best = f"{d2['best_time']:.2f}s" if d2.get("best_time") else "—"
         R.draw_text(self.screen,
-                    f"總場次 {d['total_races']}　勝場 P1 {d['total_wins'][0]} / P2 {d['total_wins'][1]}"
-                    f"　最佳單場分數 {d['best_score']:,}　最速完賽 {best}"
+                    f"總場次 {d2['total_races']}　勝場 P1 {d2['total_wins'][0]} / P2 {d2['total_wins'][1]}"
+                    f"　最佳單場分數 {d2['best_score']:,}　最速完賽 {best}"
                     f"　成就 {len(self.save.unlocked)}/{len(ACHIEVEMENTS)}",
-                    20, cfg.SCREEN_W // 2, 520, cfg.C_GREEN, center=True)
+                    20, cfg.SCREEN_W // 2, 560, cfg.C_GREEN, center=True)
 
         blink = 0.5 + 0.5 * math.sin(self.t * 4)
         col = tuple(int(c * (0.55 + 0.45 * blink)) for c in cfg.C_GOLD)
-        R.draw_text(self.screen, "[空白鍵] 開始對決　　[A] 成就　　[ESC] 離開",
-                    30, cfg.SCREEN_W // 2, 600, col, center=True)
-        R.draw_text(self.screen, "賽中：[P] 暫停　[R] 重跑本回合", 18,
-                    cfg.SCREEN_W // 2, 656, cfg.C_DIM, center=True)
+        R.draw_text(self.screen, "[↑↓] 選擇　[←→] 難度　[空白鍵] 確認　[ESC] 離開",
+                    28, cfg.SCREEN_W // 2, 610, col, center=True)
+        mute = "靜音中" if self.audio.muted else "開啟"
+        R.draw_text(self.screen,
+                    f"賽中：[P] 暫停　[R] 重跑本回合　[M] 音效切換（目前：{mute}）", 18,
+                    cfg.SCREEN_W // 2, 664, cfg.C_DIM, center=True)
 
     def draw_achievements(self) -> None:
         self.screen.fill(cfg.C_PANEL)
@@ -514,6 +715,11 @@ class Game:
                     cfg.SCREEN_H - 36, cfg.C_GOLD, center=True)
 
     # -------------------------------------------------------------- 結算畫面
+    def pname(self, i: int) -> str:
+        if self.mode == MODE_1P and i < len(self.bikes):
+            return self.bikes[i].name
+        return cfg.PLAYER_NAMES[i]
+
     def draw_round_end(self) -> None:
         veil = pygame.Surface((cfg.SCREEN_W, cfg.SCREEN_H), pygame.SRCALPHA)
         veil.fill((6, 8, 14, 225))
@@ -522,7 +728,7 @@ class Game:
         pygame.draw.rect(self.screen, (14, 17, 28), board, border_radius=16)
         pygame.draw.rect(self.screen, (52, 58, 80), board, 3, border_radius=16)
         winner = self.round_result["winner"] if self.round_result else None
-        title = "平手！" if winner is None else f"{cfg.PLAYER_NAMES[winner]} 拿下本回合！"
+        title = "平手！" if winner is None else f"{self.pname(winner)} 拿下本回合！"
         col = cfg.C_GOLD if winner is None else cfg.PLAYER_COLORS[winner]
         R.draw_text(self.screen, title, 52, cfg.SCREEN_W // 2, 40, col, center=True)
         R.draw_text(self.screen,
@@ -541,9 +747,9 @@ class Game:
             ("本回合分數", lambda s: f"{s.score:,}"),
         ]
         x0, x1, x2 = cfg.SCREEN_W // 2, cfg.SCREEN_W // 2 - 300, cfg.SCREEN_W // 2 + 300
-        R.draw_text(self.screen, cfg.PLAYER_NAMES[0], 26, x1, 150, cfg.PLAYER_COLORS[0],
+        R.draw_text(self.screen, self.pname(0), 26, x1, 150, cfg.PLAYER_COLORS[0],
                     center=True)
-        R.draw_text(self.screen, cfg.PLAYER_NAMES[1], 26, x2, 150, cfg.PLAYER_COLORS[1],
+        R.draw_text(self.screen, self.pname(1), 26, x2, 150, cfg.PLAYER_COLORS[1],
                     center=True)
         for i, (label, fn) in enumerate(rows):
             y = 192 + i * 38
@@ -558,7 +764,7 @@ class Game:
                         center=True)
             for k, (pi, ach) in enumerate(self.new_achievements[:3]):
                 R.draw_text(self.screen,
-                            f"★ {cfg.PLAYER_NAMES[pi]}：{ach.name} — {ach.desc}",
+                            f"★ {self.pname(pi)}：{ach.name} — {ach.desc}",
                             20, cfg.SCREEN_W // 2, 542 + k * 28,
                             cfg.PLAYER_COLORS[pi], center=True)
 
@@ -571,17 +777,18 @@ class Game:
         champ = getattr(self, "match_champion", 0)
         R.draw_text(self.screen, "對決結束", 56, cfg.SCREEN_W // 2, 80, cfg.C_WHITE,
                     center=True)
-        R.draw_text(self.screen, f"{cfg.PLAYER_NAMES[champ]} 獲勝！", 72,
+        R.draw_text(self.screen, f"{self.pname(champ)} 獲勝！", 72,
                     cfg.SCREEN_W // 2, 180, cfg.PLAYER_COLORS[champ], center=True)
         R.draw_text(self.screen,
                     f"回合比分　{self.round_wins[0]} - {self.round_wins[1]}",
                     34, cfg.SCREEN_W // 2, 290, cfg.C_GOLD, center=True)
         R.draw_text(self.screen,
-                    f"總積分　P1 {self.match_scores[0]:,}　　P2 {self.match_scores[1]:,}",
+                    f"總積分　{self.pname(0)} {self.match_scores[0]:,}　　"
+                    f"{self.pname(1)} {self.match_scores[1]:,}",
                     28, cfg.SCREEN_W // 2, 350, cfg.C_GREEN, center=True)
         if self.new_achievements:
             for k, (pi, ach) in enumerate(self.new_achievements[-3:]):
-                R.draw_text(self.screen, f"★ {cfg.PLAYER_NAMES[pi]}：{ach.name}",
+                R.draw_text(self.screen, f"★ {self.pname(pi)}：{ach.name}",
                             22, cfg.SCREEN_W // 2, 420 + k * 30,
                             cfg.PLAYER_COLORS[pi], center=True)
         R.draw_text(self.screen, "[空白鍵] 回主選單", 30, cfg.SCREEN_W // 2,

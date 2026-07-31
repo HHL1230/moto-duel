@@ -64,6 +64,7 @@ class Bike:
         self.stats = RaceStats()
         self.floats: list[FloatText] = []
         self.particles: list[Particle] = []
+        self.events: list[str] = []      # 供音效層取用的事件佇列
         self.reset(start_x=60.0)
 
     # -------------------------------------------------------------- 狀態
@@ -86,11 +87,13 @@ class Bike:
         self.finished = False
         self.wheel_spin = 0.0
         self.nitro_active = False
+        self.throttle_on = False
 
     def full_reset(self, start_x: float = 60.0) -> None:
         self.stats = RaceStats()
         self.floats.clear()
         self.particles.clear()
+        self.events.clear()
         self.reset(start_x)
 
     # -------------------------------------------------------------- 輔助
@@ -144,6 +147,7 @@ class Bike:
             return
 
         throttle = 1.0 if inp["gas"] else 0.0
+        self.throttle_on = bool(inp["gas"])
         brake = 1.0 if inp["brake"] else 0.0
         lean = (-1.0 if inp["lean_back"] else 0.0) + (1.0 if inp["lean_fwd"] else 0.0)
 
@@ -209,10 +213,13 @@ class Bike:
                 self.stats.score += gain
                 self.nitro = min(cfg.NITRO_MAX, self.nitro + cfg.NITRO_PER_FLIP * flips)
                 self.add_float(f"翻滾 x{flips}  +{gain}", cfg.C_PURPLE)
+                self.events.append("flip")
             if self.air_timer > 0.9:
                 bonus = int(self.air_timer * cfg.SCORE_AIRTIME)
                 self.stats.score += bonus
                 self.add_float(f"滯空 +{bonus}", cfg.C_GOLD)
+            if self.air_timer > 0.45:
+                self.events.append("land")
             self.emit(10, cfg.C_DIRT, spread=180, up=90)
             self.on_ground = True
 
@@ -307,6 +314,7 @@ class Bike:
         self.air_timer = 0.0
         self.add_float(reason, cfg.C_RED)
         self.emit(24, cfg.C_RED, spread=260, up=220)
+        self.events.append("crash")
 
     def apply_boost(self) -> None:
         a = self.terrain.angle_at(self.x) if self.on_ground else self.angle
@@ -316,3 +324,4 @@ class Bike:
         self.stats.boosts += 1
         self.add_float("加速板！", cfg.C_GREEN)
         self.emit(14, cfg.C_GREEN, spread=200, up=140)
+        self.events.append("boost")

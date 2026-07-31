@@ -58,6 +58,9 @@ SCORE_FLIP = 500
 SCORE_AIRTIME = 40          # 每秒滯空
 SCORE_WIN = 3000
 SCORE_CRASH = -250
+SCORE_SPIKE_GRAZE = -100
+ROCK_SAFE_SPEED = 430.0     # 高於此速度撞巨石會墜毀
+SPIKE_SAFE_SPEED = 500.0    # 高於此速度輾過尖刺會墜毀
 SCORE_FINISH_TIME_BONUS = 60    # (基準秒數 - 完賽秒數) * 此值
 PAR_TIME = 75.0
 

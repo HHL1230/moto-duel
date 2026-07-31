@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 save_data.json
 shot_*.png
+tests/_shots/

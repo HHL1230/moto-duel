@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from motoduel import config as cfg          # noqa: E402
 from motoduel.achievements import ACHIEVEMENTS, SaveData  # noqa: E402
+from motoduel.ai import AIRider, DIFFICULTIES, DIFFICULTY_ORDER, make_ai_name  # noqa: E402
 from motoduel.entities import Bike          # noqa: E402
 from motoduel.game import Game              # noqa: E402
 from motoduel.terrain import Terrain        # noqa: E402
@@ -109,10 +110,23 @@ def test_interactions() -> None:
         b2.x = spike.x
         b2.y = game.terrain.height_at(spike.x)
         b2.shield_timer = 0.0
+        b2.vx = cfg.SPIKE_SAFE_SPEED + 120
         game.handle_collisions(1, b2, 1 / 60)
-        check(b2.crashed, "尖刺造成墜毀")
+        check(b2.crashed, "高速撞尖刺造成墜毀")
+
+        b2.crash_timer = 0.0
+        b2.shield_timer = 0.0
+        b2.vx = cfg.SPIKE_SAFE_SPEED - 200
+        b2.vy = 0.0
+        before = b2.stats.score
+        game.ob_cooldown.clear()
+        game.handle_collisions(1, b2, 1 / 60)
+        check(not b2.crashed and b2.stats.score == before + cfg.SCORE_SPIKE_GRAZE,
+              "低速擦過尖刺僅扣分")
+
         b2.crash_timer = 0.0
         b2.shield_timer = 3.0
+        b2.vx = cfg.SPIKE_SAFE_SPEED + 120
         game.ob_cooldown.clear()
         game.handle_collisions(1, b2, 1 / 60)
         check(not b2.crashed and b2.shield_timer == 0, "護盾可抵擋尖刺一次")
@@ -241,18 +255,110 @@ def test_render_frames() -> None:
     game = Game()
     game.draw()
     check(True, "主選單繪製正常")
-    game.on_key(pygame.K_a)
+
+    game.menu_index = 2
+    game.on_key(pygame.K_SPACE)
     game.draw()
     check(game.state == 5, "成就畫面繪製正常")
-    game.on_key(pygame.K_a)
     game.on_key(pygame.K_SPACE)
+    check(game.state == 0, "成就畫面可返回")
+
+    # 雙人分割畫面
+    game.menu_index = 1
+    game.on_key(pygame.K_SPACE)
+    check(game.mode == "2p", "選單可進入雙人模式")
     for _ in range(300):
         game.update(1 / 60)
         game.draw()
-    check(True, "賽中畫面連續 300 幀繪製正常")
+    check(True, "雙人賽中畫面連續 300 幀繪製正常")
     game.on_key(pygame.K_p)
     game.draw()
     check(game.state == 6, "暫停畫面繪製正常")
+
+    # 單人全螢幕畫面
+    game.on_key(pygame.K_p)
+    game.on_key(pygame.K_ESCAPE)
+    game.menu_index = 0
+    game.on_key(pygame.K_SPACE)
+    check(game.mode == "1p" and game.ai is not None, "選單可進入單人模式")
+    for _ in range(300):
+        game.update(1 / 60)
+        game.draw()
+    check(True, "單人賽中畫面連續 300 幀繪製正常")
+    check(game.bikes[1].x > 300, "單人模式電腦對手會前進")
+
+
+def test_menu_navigation() -> None:
+    print("\n== 選單操作 ==")
+    game = Game()
+    game.menu_index = 0
+    game.on_key(pygame.K_DOWN)
+    check(game.menu_index == 1, "↓ 可切換選項")
+    game.on_key(pygame.K_UP)
+    check(game.menu_index == 0, "↑ 可切換選項")
+    before = game.difficulty
+    game.on_key(pygame.K_RIGHT)
+    check(game.difficulty != before, "→ 可切換難度")
+    game.on_key(pygame.K_LEFT)
+    check(game.difficulty == before, "← 可切回難度")
+    for key in DIFFICULTY_ORDER:
+        check(key in DIFFICULTIES and "name" in DIFFICULTIES[key]
+              and "hint" in DIFFICULTIES[key], f"難度 {key} 設定完整")
+
+
+def test_ai_riders() -> None:
+    print("\n== 電腦對手 ==")
+    from motoduel.terrain import Terrain
+    for diff in DIFFICULTY_ORDER:
+        times = []
+        crashes = []
+        for seed in (7, 99, 20260731):
+            terrain = Terrain(seed)
+            bike = Bike(1, terrain)
+            ai = AIRider(bike, terrain, diff, seed)
+            t = 0.0
+            for _ in range(int(120 * 60)):
+                t += 1 / 60
+                bike.update(1 / 60, ai.think(1 / 60), t)
+                bike.events.clear()
+                if bike.x >= cfg.TRACK_LENGTH:
+                    break
+            times.append(t)
+            crashes.append(bike.stats.crashes)
+        done = all(x < 119 for x in times)
+        avg = sum(times) / len(times)
+        check(done, f"{diff} 電腦可完賽（平均 {avg:.1f}s）")
+        check(max(crashes) <= 6, f"{diff} 電腦墜毀次數合理（最多 {max(crashes)}）")
+    check(True, "AI 名稱可產生：" + make_ai_name("hard"))
+
+
+def test_audio() -> None:
+    print("\n== 音訊系統 ==")
+    from motoduel import audio as A
+    a = A.Audio(True)
+    check(isinstance(a.ok, bool), "Audio 初始化不崩潰")
+    if a.ok:
+        check(len(a.sfx) >= 13, f"音效數量 {len(a.sfx)}")
+        check(len(a.engines) >= 3, f"引擎音階數 {len(a.engines)}")
+        for name in ("race", "menu"):
+            check(name in a.music, f"背景音樂 {name} 已生成")
+        check(a.music["race"].get_length() > 3.0, "比賽 BGM 長度合理")
+    for name in ("coin", "crash", "flip", "boost", "finish", "ui", "unlock",
+                 "beep", "go", "thud", "nitro_pickup", "shield", "land"):
+        a.play(name)
+        if a.ok:
+            check(name in a.sfx, f"音效 {name} 已生成")
+    a.play_music("race")
+    for r in (0.0, 0.3, 0.6, 1.0):
+        a.update_engine(r, True, True)
+    a.update_engine(0.5, False, False)
+    a.stop_engine()
+    check(a.toggle_mute() is True, "可切換靜音")
+    a.play("coin")
+    a.play_music("menu")
+    check(a.toggle_mute() is False, "可取消靜音")
+    a.stop_music()
+    check(True, "音訊 API 呼叫全程無例外")
 
 
 def main() -> int:
@@ -265,6 +371,9 @@ def main() -> int:
     test_flips_and_score()
     test_achievements()
     test_round_flow()
+    test_menu_navigation()
+    test_ai_riders()
+    test_audio()
     test_render_frames()
     print("\n" + "=" * 46)
     if FAILS:
