@@ -299,7 +299,7 @@ def test_input_events() -> None:
     # 按鍵配置：玩家 1 氮氣為左 Ctrl，且雙方按鍵不衝突
     from motoduel.game import CONTROLS, NITRO_ALT
     check(CONTROLS[0][5] == pygame.K_LCTRL, "玩家 1 氮氣鍵為左 Ctrl")
-    check(CONTROLS[1][5] == pygame.K_RCTRL, "玩家 2 氮氣鍵為右 Ctrl")
+    check(CONTROLS[1][5] == pygame.K_SLASH, "玩家 2 氮氣鍵為 /")
     p1_keys = set(CONTROLS[0][1:]) | set(NITRO_ALT[0])
     p2_keys = set(CONTROLS[1][1:]) | set(NITRO_ALT[1])
     check(not (p1_keys & p2_keys), "雙人模式兩位玩家按鍵無衝突")
