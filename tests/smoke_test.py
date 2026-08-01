@@ -328,6 +328,12 @@ def test_display_mode() -> None:
     check(game.fullscreen is False, "F11 可切回視窗模式")
     check(game.save.data["fullscreen"] is False, "視窗偏好已寫入存檔")
 
+    # F 鍵同樣可切換
+    game.on_key(pygame.K_f)
+    check(game.fullscreen is True, "F 可切換到全螢幕")
+    game.on_key(pygame.K_f)
+    check(game.fullscreen is False, "F 可切回視窗模式")
+
     # Alt+Enter 亦可切換，且不會被誤判為選單確認
     game.state = 0
     game.menu_index = 1
@@ -346,6 +352,13 @@ def test_display_mode() -> None:
     check(game.save.data["muted"] is True, "靜音偏好已寫入存檔")
     game.on_key(pygame.K_m)
     check(game.save.data["muted"] is False, "取消靜音已寫入存檔")
+
+    # F 鍵不可與任一玩家操作鍵衝突
+    from motoduel.game import CONTROLS, NITRO_ALT
+    all_keys = set()
+    for i in range(2):
+        all_keys |= set(CONTROLS[i][1:]) | set(NITRO_ALT[i])
+    check(pygame.K_f not in all_keys, "F 鍵不與玩家操作鍵衝突")
 
     # 存檔可讀回並於下次啟動套用
     game.save.data["fullscreen"] = True

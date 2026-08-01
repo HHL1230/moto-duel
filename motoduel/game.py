@@ -205,9 +205,10 @@ class Game:
             self.on_key(pygame.K_SPACE)
 
     def on_key(self, key: int, mod: int = 0) -> None:
-        # F11 或 Alt+Enter 切換全螢幕
-        if key == pygame.K_F11 or (key in (pygame.K_RETURN, pygame.K_KP_ENTER)
-                                   and mod & pygame.KMOD_ALT):
+        # F / F11 / Alt+Enter 切換全螢幕
+        if key in (pygame.K_f, pygame.K_F11) or (
+            key in (pygame.K_RETURN, pygame.K_KP_ENTER) and mod & pygame.KMOD_ALT
+        ):
             self.toggle_fullscreen()
             self.audio.play("ui")
             return
@@ -754,7 +755,7 @@ class Game:
         scr = "全螢幕" if self.fullscreen else "視窗"
         R.draw_text(self.screen,
                     f"賽中：[P] 暫停　[R] 重跑本回合　[M] 音效（{mute}）"
-                    f"　[F11] 全螢幕（目前：{scr}）", 18,
+                    f"　[F] 全螢幕（目前：{scr}）", 18,
                     cfg.SCREEN_W // 2, 664, cfg.C_DIM, center=True)
 
     def draw_achievements(self) -> None:
