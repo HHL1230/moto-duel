@@ -35,16 +35,16 @@ class Game:
     def __init__(self, audio_enabled: bool = True) -> None:
         pygame.init()
         pygame.display.set_caption(cfg.TITLE)
-        self.screen = pygame.display.set_mode((cfg.SCREEN_W, cfg.SCREEN_H))
-        # 關閉 SDL 文字輸入，避免中文輸入法攔截空白鍵導致選單無反應
-        try:
-            pygame.key.stop_text_input()
-        except AttributeError:
-            pass
+        self.fullscreen = False
+        self.screen = self._apply_display_mode(False)
         self.clock = pygame.time.Clock()
         self._splash("音效合成中…")
         self.save = SaveData()
         self.audio = Audio(audio_enabled)
+        if self.save.data.get("muted"):
+            self.audio.toggle_mute()
+        if self.save.data.get("fullscreen"):
+            self.set_fullscreen(True)
         self.views = [
             pygame.Surface((cfg.VIEW_W, cfg.VIEW_H)),
             pygame.Surface((cfg.VIEW_W, cfg.VIEW_H)),
@@ -81,6 +81,46 @@ class Game:
         self.ob_cooldown: dict[tuple[int, int], float] = {}
         self.achieve_scroll = 0
         self.audio.play_music("menu")
+
+    def _apply_display_mode(self, fullscreen: bool) -> pygame.Surface:
+        """建立顯示視窗。全螢幕採獨佔模式並將解析度切至 1280x720。
+
+        若顯示器不支援該解析度，改用 SCALED 全螢幕（維持 1280x720 邏輯畫布，
+        由 SDL 等比縮放），確保不會因模式切換失敗而崩潰。
+        """
+        size = (cfg.SCREEN_W, cfg.SCREEN_H)
+        if fullscreen:
+            attempts = [pygame.FULLSCREEN, pygame.FULLSCREEN | pygame.SCALED]
+        else:
+            attempts = [0]
+        surf = None
+        for flags in attempts:
+            try:
+                surf = pygame.display.set_mode(size, flags)
+                break
+            except pygame.error:
+                continue
+        if surf is None:
+            surf = pygame.display.set_mode(size)
+            fullscreen = False
+        self.fullscreen = fullscreen
+        # 關閉 SDL 文字輸入，避免中文輸入法攔截空白鍵導致選單無反應
+        try:
+            pygame.key.stop_text_input()
+        except AttributeError:
+            pass
+        pygame.mouse.set_visible(not fullscreen)
+        return surf
+
+    def set_fullscreen(self, fullscreen: bool) -> None:
+        if fullscreen == self.fullscreen:
+            return
+        self.screen = self._apply_display_mode(fullscreen)
+        self.save.data["fullscreen"] = self.fullscreen
+        self.save.save()
+
+    def toggle_fullscreen(self) -> None:
+        self.set_fullscreen(not self.fullscreen)
 
     def _splash(self, text: str) -> None:
         self.screen.fill(cfg.C_PANEL)
@@ -158,17 +198,26 @@ class Game:
             elif e.type == pygame.KEYDOWN:
                 if e.key == pygame.K_SPACE:
                     space_from_key = True
-                self.on_key(e.key)
+                self.on_key(e.key, e.mod)
             elif e.type == pygame.TEXTINPUT and e.text and e.text.strip(" \u3000") == "":
                 pending_text_space = True
         if pending_text_space and not space_from_key:
             self.on_key(pygame.K_SPACE)
 
-    def on_key(self, key: int) -> None:
+    def on_key(self, key: int, mod: int = 0) -> None:
+        # F11 或 Alt+Enter 切換全螢幕
+        if key == pygame.K_F11 or (key in (pygame.K_RETURN, pygame.K_KP_ENTER)
+                                   and mod & pygame.KMOD_ALT):
+            self.toggle_fullscreen()
+            self.audio.play("ui")
+            return
+
         if key == pygame.K_m:
             muted = self.audio.toggle_mute()
             if not muted:
                 self.audio.play("ui")
+            self.save.data["muted"] = muted
+            self.save.save()
             return
 
         if key == pygame.K_ESCAPE:
@@ -702,8 +751,10 @@ class Game:
         R.draw_text(self.screen, "[↑↓] 選擇　[←→] 難度　[空白鍵] 確認　[ESC] 離開",
                     28, cfg.SCREEN_W // 2, 610, col, center=True)
         mute = "靜音中" if self.audio.muted else "開啟"
+        scr = "全螢幕" if self.fullscreen else "視窗"
         R.draw_text(self.screen,
-                    f"賽中：[P] 暫停　[R] 重跑本回合　[M] 音效切換（目前：{mute}）", 18,
+                    f"賽中：[P] 暫停　[R] 重跑本回合　[M] 音效（{mute}）"
+                    f"　[F11] 全螢幕（目前：{scr}）", 18,
                     cfg.SCREEN_W // 2, 664, cfg.C_DIM, center=True)
 
     def draw_achievements(self) -> None:

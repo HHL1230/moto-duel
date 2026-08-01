@@ -305,6 +305,60 @@ def test_input_events() -> None:
     check(not (p1_keys & p2_keys), "雙人模式兩位玩家按鍵無衝突")
 
 
+def test_display_mode() -> None:
+    print("\n== 顯示模式（全螢幕） ==")
+    import tempfile
+    from pathlib import Path
+    save_path = Path(tempfile.mkdtemp()) / "save.json"
+
+    game = Game()
+    game.save = SaveData(save_path)
+    game.set_fullscreen(False)
+    check(game.fullscreen is False, "初始為視窗模式")
+
+    game.on_key(pygame.K_F11)
+    check(game.fullscreen is True, "F11 可切換到全螢幕")
+    check(game.screen.get_size() == (cfg.SCREEN_W, cfg.SCREEN_H),
+          "全螢幕邏輯畫布仍為 1280x720")
+    game.draw()
+    check(True, "全螢幕下可正常繪製")
+    check(game.save.data["fullscreen"] is True, "全螢幕偏好已寫入存檔")
+
+    game.on_key(pygame.K_F11)
+    check(game.fullscreen is False, "F11 可切回視窗模式")
+    check(game.save.data["fullscreen"] is False, "視窗偏好已寫入存檔")
+
+    # Alt+Enter 亦可切換，且不會被誤判為選單確認
+    game.state = 0
+    game.menu_index = 1
+    game.on_key(pygame.K_RETURN, pygame.KMOD_LALT)
+    check(game.fullscreen is True, "Alt+Enter 可切換全螢幕")
+    check(game.state == 0, "Alt+Enter 不會誤觸發選單確認")
+    game.on_key(pygame.K_RETURN, pygame.KMOD_LALT)
+    check(game.fullscreen is False, "Alt+Enter 可切回視窗")
+
+    # 單純 Enter 仍可確認選單
+    game.on_key(pygame.K_RETURN)
+    check(game.state == 1, "單獨 Enter 仍可確認選單")
+
+    # 靜音偏好持久化
+    game.on_key(pygame.K_m)
+    check(game.save.data["muted"] is True, "靜音偏好已寫入存檔")
+    game.on_key(pygame.K_m)
+    check(game.save.data["muted"] is False, "取消靜音已寫入存檔")
+
+    # 存檔可讀回並於下次啟動套用
+    game.save.data["fullscreen"] = True
+    game.save.save()
+    reloaded = SaveData(save_path)
+    check(reloaded.data["fullscreen"] is True, "偏好可正確讀回")
+
+    # 預設存檔不會被前一份存檔汙染（deepcopy 保護）
+    fresh = SaveData(Path(tempfile.mkdtemp()) / "none.json")
+    check(fresh.data["total_wins"] == [0, 0] and fresh.data["fullscreen"] is False,
+          "新存檔使用乾淨的預設值")
+
+
 def test_render_frames() -> None:
     print("\n== 畫面繪製 ==")
     game = Game()
@@ -428,6 +482,7 @@ def main() -> int:
     test_round_flow()
     test_menu_navigation()
     test_input_events()
+    test_display_mode()
     test_ai_riders()
     test_audio()
     test_render_frames()

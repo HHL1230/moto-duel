@@ -1,6 +1,7 @@
 """成就系統與存檔（分數紀錄、解鎖狀態）。"""
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,25 +65,27 @@ DEFAULT_SAVE = {
     "total_flips": 0,
     "best_score": 0,
     "best_time": None,
+    "fullscreen": False,     # 上次使用的顯示模式
+    "muted": False,          # 上次的靜音設定
 }
 
 
 class SaveData:
     def __init__(self, path: Path = SAVE_PATH) -> None:
         self.path = path
-        self.data = dict(DEFAULT_SAVE)
+        self.data = copy.deepcopy(DEFAULT_SAVE)
         self.load()
 
     def load(self) -> None:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            merged = dict(DEFAULT_SAVE)
+            merged = copy.deepcopy(DEFAULT_SAVE)
             merged.update({k: v for k, v in raw.items() if k in DEFAULT_SAVE})
             if not isinstance(merged.get("total_wins"), list) or len(merged["total_wins"]) != 2:
                 merged["total_wins"] = [0, 0]
             self.data = merged
         except (OSError, ValueError):
-            self.data = dict(DEFAULT_SAVE)
+            self.data = copy.deepcopy(DEFAULT_SAVE)
 
     def save(self) -> None:
         try:
