@@ -35,6 +35,11 @@ class Particle:
     life: float
     color: tuple
     size: float = 3.0
+    kind: str = "dirt"      # "dirt" | "smoke" | "spark"
+    max_life: float = 0.8
+    gravity: float = 620.0
+    grow: float = 0.0       # 每秒尺寸增長（煙霧擴散用）
+    spin: float = 0.0
 
 
 @dataclass
@@ -88,6 +93,11 @@ class Bike:
         self.wheel_spin = 0.0
         self.nitro_active = False
         self.throttle_on = False
+        self.lean_input = 0.0       # 騎士重心（-1 後傾 / +1 前傾），供繪製使用
+        self.susp_f = 0.0           # 前避震壓縮量 0..1
+        self.susp_r = 0.0           # 後避震壓縮量 0..1
+        self.smoke_acc = 0.0        # 排氣煙生成累積器
+        self.dust_acc = 0.0         # 揚塵生成累積器
 
     def full_reset(self, start_x: float = 60.0) -> None:
         self.stats = RaceStats()
@@ -116,15 +126,73 @@ class Bike:
     def add_float(self, text: str, color: tuple) -> None:
         self.floats.append(FloatText(text, color, self.x, self.y - 44))
 
-    def emit(self, n: int, color: tuple, spread: float = 160.0, up: float = 120.0) -> None:
+    def emit(self, n: int, color: tuple, spread: float = 160.0, up: float = 120.0,
+             kind: str = "spark", size: tuple[float, float] = (2.0, 4.5),
+             life: tuple[float, float] = (0.3, 0.8), gravity: float = 620.0,
+             grow: float = 0.0, ox: float = 0.0, oy: float = 12.0) -> None:
         for _ in range(n):
+            lf = random.uniform(*life)
             self.particles.append(
                 Particle(
-                    self.x, self.y + 12,
+                    self.x + ox, self.y + oy,
                     random.uniform(-spread, spread) - self.vx * 0.15,
                     random.uniform(-up, 20) - self.vy * 0.15,
-                    random.uniform(0.3, 0.8), color,
-                    random.uniform(2.0, 4.5),
+                    lf, color, random.uniform(*size),
+                    kind, lf, gravity, grow,
+                    random.uniform(-6.0, 6.0),
+                )
+            )
+
+    def emit_dirt(self, n: int, strength: float = 1.0) -> None:
+        """輪胎揚起的泥土碎屑（受車速影響往後拋灑）。"""
+        for _ in range(n):
+            lf = random.uniform(0.35, 0.75)
+            self.particles.append(
+                Particle(
+                    self.x - 18 + random.uniform(-6, 6),
+                    self.y + 14 + random.uniform(-3, 3),
+                    -self.vx * random.uniform(0.12, 0.34) + random.uniform(-40, 40),
+                    -random.uniform(60, 240) * strength,
+                    lf,
+                    random.choice((cfg.C_DIRT, cfg.C_DIRT_DARK, cfg.C_SUBSOIL)),
+                    random.uniform(1.6, 3.6), "dirt", lf, 900.0, 0.0,
+                    random.uniform(-8, 8),
+                )
+            )
+
+    def emit_dust(self, n: int, strength: float = 1.0) -> None:
+        """輪胎接地揚起的粉塵（緩慢擴散上升）。"""
+        for _ in range(n):
+            lf = random.uniform(0.5, 1.1)
+            g = random.randint(0, 26)
+            self.particles.append(
+                Particle(
+                    self.x - 14 + random.uniform(-10, 10),
+                    self.y + 14,
+                    -self.vx * 0.06 + random.uniform(-30, 30),
+                    -random.uniform(10, 50) * strength,
+                    lf, (150 + g, 128 + g, 104 + g),
+                    random.uniform(5.0, 9.0), "smoke", lf, -40.0,
+                    random.uniform(16, 30),
+                )
+            )
+
+    def emit_exhaust(self, n: int = 1) -> None:
+        """排氣管廢氣。"""
+        a = self.angle
+        ox = -26 * math.cos(a) - 2 * math.sin(a)
+        oy = -26 * math.sin(a) + 2 * math.cos(a)
+        for _ in range(n):
+            lf = random.uniform(0.35, 0.7)
+            g = random.randint(0, 30)
+            self.particles.append(
+                Particle(
+                    self.x + ox, self.y + oy,
+                    -self.vx * 0.1 + random.uniform(-24, 24),
+                    random.uniform(-46, -14),
+                    lf, (96 + g, 96 + g, 104 + g),
+                    random.uniform(3.0, 5.5), "smoke", lf, -30.0,
+                    random.uniform(12, 22),
                 )
             )
 
@@ -150,13 +218,15 @@ class Bike:
         self.throttle_on = bool(inp["gas"])
         brake = 1.0 if inp["brake"] else 0.0
         lean = (-1.0 if inp["lean_back"] else 0.0) + (1.0 if inp["lean_fwd"] else 0.0)
+        self.lean_input += (lean - self.lean_input) * min(1.0, 9.0 * dt)
 
         # ---- 氮氣
         self.nitro_active = bool(inp["nitro"]) and self.nitro > 0 and not self.crashed
         if self.nitro_active:
             self.nitro = max(0.0, self.nitro - cfg.NITRO_DRAIN * dt)
             self.stats.nitro_time += dt
-            self.emit(2, cfg.C_CYAN, spread=60, up=40)
+            self.emit(3, cfg.C_CYAN, spread=50, up=30, kind="spark",
+                      size=(1.6, 3.4), life=(0.14, 0.3), gravity=120.0, oy=6.0)
         else:
             self.nitro = min(cfg.NITRO_MAX, self.nitro + cfg.NITRO_REGEN * dt)
 
@@ -220,7 +290,11 @@ class Bike:
                 self.add_float(f"滯空 +{bonus}", cfg.C_GOLD)
             if self.air_timer > 0.45:
                 self.events.append("land")
-            self.emit(10, cfg.C_DIRT, spread=180, up=90)
+            impact = min(1.0, max(0.0, v_n / 620.0))
+            self.susp_f = max(self.susp_f, 0.35 + impact * 0.65)
+            self.susp_r = max(self.susp_r, 0.45 + impact * 0.55)
+            self.emit_dirt(int(6 + impact * 14), 0.6 + impact)
+            self.emit_dust(int(3 + impact * 6), 0.6 + impact)
             self.on_ground = True
 
         self.y = ground_y
@@ -259,7 +333,12 @@ class Bike:
         self.angle += wrap_angle(target - self.angle) * min(1.0, cfg.GROUND_ALIGN * dt)
 
         if throttle and abs(v_t) > 60:
-            self.emit(1, cfg.C_DIRT_DARK, spread=90, up=50)
+            self.dust_acc += abs(v_t) * dt * (2.2 if self.nitro_active else 1.4)
+            while self.dust_acc > 90:
+                self.dust_acc -= 90
+                self.emit_dirt(1, 0.5 + abs(v_t) / cfg.MAX_SPEED)
+                if random.random() < 0.7:
+                    self.emit_dust(1, 0.4 + abs(v_t) / cfg.MAX_SPEED * 0.6)
 
     def _coast(self, dt: float) -> None:
         """完賽後自動減速滑行。"""
@@ -289,15 +368,33 @@ class Bike:
         self.in_mud = False
 
     def _update_fx(self, dt: float) -> None:
+        # 避震回彈（臨界阻尼近似）
+        self.susp_f += (0.0 - self.susp_f) * min(1.0, 7.0 * dt)
+        self.susp_r += (0.0 - self.susp_r) * min(1.0, 6.0 * dt)
+        if self.on_ground and not self.crashed and not self.finished:
+            # 地形起伏造成的避震微幅作動，讓車體有生命感
+            bump = abs(self.terrain.slope_at(self.x + 26) - self.terrain.slope_at(self.x - 26))
+            self.susp_f = min(1.0, self.susp_f + bump * abs(self.vx) * 0.0016 * dt * 60)
+            self.susp_r = min(1.0, self.susp_r + bump * abs(self.vx) * 0.0013 * dt * 60)
+        # 排氣煙
+        if not self.crashed and not self.finished:
+            self.smoke_acc += dt * (26.0 if self.throttle_on else 9.0)
+            while self.smoke_acc > 10:
+                self.smoke_acc -= 10
+                self.emit_exhaust(1)
+
         for f in self.floats:
             f.life -= dt
             f.y -= 34 * dt
         self.floats = [f for f in self.floats if f.life > 0]
         for p in self.particles:
             p.life -= dt
-            p.vy += 620 * dt
+            p.vy += p.gravity * dt
+            p.vx *= (1.0 - 1.4 * dt) if p.kind == "smoke" else 1.0
             p.x += p.vx * dt
             p.y += p.vy * dt
+            if p.grow:
+                p.size += p.grow * dt
         self.particles = [p for p in self.particles if p.life > 0]
 
     # -------------------------------------------------------------- 事件
@@ -313,7 +410,13 @@ class Bike:
         self.air_rotation = 0.0
         self.air_timer = 0.0
         self.add_float(reason, cfg.C_RED)
-        self.emit(24, cfg.C_RED, spread=260, up=220)
+        self.emit(18, (255, 176, 80), spread=260, up=220, kind="spark",
+                  size=(1.6, 3.2), life=(0.25, 0.6), gravity=760.0)
+        self.emit_dirt(16, 1.4)
+        self.emit(10, (120, 118, 124), spread=140, up=120, kind="smoke",
+                  size=(6.0, 11.0), life=(0.6, 1.2), gravity=-60.0, grow=26.0)
+        self.susp_f = 1.0
+        self.susp_r = 1.0
         self.events.append("crash")
 
     def apply_boost(self) -> None:
@@ -323,5 +426,8 @@ class Bike:
         self.boost_timer = 0.6
         self.stats.boosts += 1
         self.add_float("加速板！", cfg.C_GREEN)
-        self.emit(14, cfg.C_GREEN, spread=200, up=140)
+        self.emit(16, cfg.C_GREEN, spread=200, up=140, kind="spark",
+                  size=(1.8, 3.6), life=(0.25, 0.6), gravity=420.0)
+        self.emit_dust(8, 1.2)
+        self.susp_r = 1.0
         self.events.append("boost")

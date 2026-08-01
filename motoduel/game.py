@@ -80,6 +80,7 @@ class Game:
         self.new_achievements: list = []
         self.ob_cooldown: dict[tuple[int, int], float] = {}
         self.achieve_scroll = 0
+        self.shake = 0.0
         self.audio.play_music("menu")
 
     def _apply_display_mode(self, fullscreen: bool) -> pygame.Surface:
@@ -319,6 +320,8 @@ class Game:
 
     # ============================================================== 更新
     def update(self, dt: float) -> None:
+        if self.shake > 0:
+            self.shake = max(0.0, self.shake - self.shake * 6.0 * dt - 6.0 * dt)
         if self.state == COUNTDOWN:
             self.countdown -= dt
             mark = int(math.ceil(self.countdown))
@@ -348,7 +351,21 @@ class Game:
             vol = 1.0 if i == 0 or self.mode == MODE_2P else 0.55
             for name in bike.events:
                 self.audio.play(name, vol)
+                # 玩家 1（單人模式視角主角）才觸發畫面震動
+                if self.mode == MODE_2P or i == 0:
+                    if name == "crash":
+                        self.shake = max(self.shake, 14.0)
+                    elif name == "land":
+                        self.shake = max(self.shake, 5.0)
+                    elif name == "boost":
+                        self.shake = max(self.shake, 7.0)
             bike.events.clear()
+
+    def shake_offset(self) -> tuple[int, int]:
+        if self.shake <= 0.2:
+            return (0, 0)
+        a = self.t * 47.0
+        return (int(math.sin(a) * self.shake), int(math.cos(a * 1.7) * self.shake * 0.7))
 
     def update_race(self, dt: float) -> None:
         self.race_time += dt
@@ -589,20 +606,23 @@ class Game:
         bike, rival = self.bikes[0], self.bikes[1]
         view.blit(self.full_sky, (0, 0))
         cam_x, cam_y = self.cams[0], self.cam_y[0]
-        R.draw_parallax(view, cam_x, cfg.SCREEN_H)
+        R.draw_parallax(view, cam_x, cfg.SCREEN_H, self.t, False, cam_y)
         R.draw_terrain(view, self.terrain, cam_x, cam_y)
-        R.draw_obstacles(view, self.terrain, cam_x, cam_y)
+        R.draw_obstacles(view, self.terrain, cam_x, cam_y, self.t)
         R.draw_pickups(view, self.terrain, cam_x, cam_y, 0, self.t)
         R.draw_finish(view, self.terrain, cam_x, cam_y)
         if abs(rival.x - bike.x) < cfg.SCREEN_W:
-            R.draw_bike(view, rival, cam_x, cam_y)
+            R.draw_bike(view, rival, cam_x, cam_y, self.terrain, self.t)
             R.draw_particles(view, rival, cam_x, cam_y)
         R.draw_particles(view, bike, cam_x, cam_y)
-        R.draw_bike(view, bike, cam_x, cam_y)
+        R.draw_bike(view, bike, cam_x, cam_y, self.terrain, self.t)
         R.draw_floats(view, bike, cam_x, cam_y)
         self.draw_offscreen_arrow(view, bike, rival, cam_x)
-        R.draw_hud(view, bike, rival, self.race_time, self.rank_of(0), self.countdown)
-        self.screen.blit(view, (0, 0))
+        R.draw_speed_fx(view, bike, self.t)
+        R.draw_vignette(view)
+        R.draw_hud(view, bike, rival, self.race_time, self.rank_of(0), self.countdown,
+                   self.terrain)
+        self.screen.blit(view, self.shake_offset())
         R.draw_text(self.screen,
                     f"回合 {self.round_index + 1}/{cfg.ROUNDS_PER_MATCH}   "
                     f"{self.round_wins[0]} - {self.round_wins[1]}   "
@@ -617,28 +637,36 @@ class Game:
 
     def draw_race_split(self) -> None:
         assert self.terrain is not None
+        ox, oy = self.shake_offset()
         for i, bike in enumerate(self.bikes):
             view = self.views[i]
             view.blit(self.skies[i], (0, 0))
             cam_x, cam_y = self.cams[i], self.cam_y[i]
-            R.draw_parallax(view, cam_x, cfg.VIEW_H)
+            R.draw_parallax(view, cam_x, cfg.VIEW_H, self.t, i == 1, cam_y)
             R.draw_terrain(view, self.terrain, cam_x, cam_y)
-            R.draw_obstacles(view, self.terrain, cam_x, cam_y)
+            R.draw_obstacles(view, self.terrain, cam_x, cam_y, self.t)
             R.draw_pickups(view, self.terrain, cam_x, cam_y, i, self.t)
             R.draw_finish(view, self.terrain, cam_x, cam_y)
             rival = self.bikes[1 - i]
             if abs(rival.x - bike.x) < cfg.VIEW_W:
-                R.draw_bike(view, rival, cam_x, cam_y)
+                R.draw_bike(view, rival, cam_x, cam_y, self.terrain, self.t)
             R.draw_particles(view, bike, cam_x, cam_y)
-            R.draw_bike(view, bike, cam_x, cam_y)
+            R.draw_bike(view, bike, cam_x, cam_y, self.terrain, self.t)
             R.draw_floats(view, bike, cam_x, cam_y)
             self.draw_offscreen_arrow(view, bike, rival, cam_x)
+            R.draw_speed_fx(view, bike, self.t)
+            R.draw_vignette(view)
             rank = 1 if self.rank_of(i) == 1 else 2
-            R.draw_hud(view, bike, rival, self.race_time, rank, self.countdown)
-            self.screen.blit(view, (0, i * (cfg.VIEW_H + cfg.DIVIDER_H)))
+            R.draw_hud(view, bike, rival, self.race_time, rank, self.countdown,
+                       self.terrain)
+            self.screen.blit(view, (ox, oy + i * (cfg.VIEW_H + cfg.DIVIDER_H)))
 
         pygame.draw.rect(self.screen, (12, 14, 22),
                          (0, cfg.VIEW_H, cfg.SCREEN_W, cfg.DIVIDER_H))
+        pygame.draw.line(self.screen, (60, 66, 88), (0, cfg.VIEW_H),
+                         (cfg.SCREEN_W, cfg.VIEW_H), 1)
+        pygame.draw.line(self.screen, (60, 66, 88), (0, cfg.VIEW_H + cfg.DIVIDER_H - 1),
+                         (cfg.SCREEN_W, cfg.VIEW_H + cfg.DIVIDER_H - 1), 1)
         R.draw_text(self.screen, f"回合 {self.round_index + 1}/{cfg.ROUNDS_PER_MATCH}   "
                                  f"{self.round_wins[0]} - {self.round_wins[1]}",
                     16, cfg.SCREEN_W - 90, cfg.VIEW_H - 16, cfg.C_DIM, center=True)
@@ -676,19 +704,29 @@ class Game:
         veil = pygame.Surface((cfg.SCREEN_W, cfg.SCREEN_H), pygame.SRCALPHA)
         veil.fill((6, 8, 14, 190))
         self.screen.blit(veil, (0, 0))
-        R.draw_text(self.screen, title, 64, cfg.SCREEN_W // 2, cfg.SCREEN_H // 2 - 40,
+        cy = cfg.SCREEN_H // 2
+        box = pygame.Rect(cfg.SCREEN_W // 2 - 260, cy - 78, 520, 168)
+        self.screen.blit(R.panel(box.w, box.h, (30, 34, 52), (12, 14, 24), 235,
+                                 (92, 100, 130)), box.topleft)
+        R.blit_glow(self.screen, (54, 42, 10), cfg.SCREEN_W // 2, cy - 6, 220)
+        R.draw_text(self.screen, title, 64, cfg.SCREEN_W // 2, cy - 40,
                     cfg.C_GOLD, center=True)
-        R.draw_text(self.screen, sub, 24, cfg.SCREEN_W // 2, cfg.SCREEN_H // 2 + 30,
+        R.draw_text(self.screen, sub, 24, cfg.SCREEN_W // 2, cy + 30,
                     cfg.C_DIM, center=True)
 
     # -------------------------------------------------------------- 選單
     def draw_menu(self) -> None:
-        self.screen.blit(self.skies[0], (0, 0))
-        self.screen.blit(self.skies[1], (0, cfg.VIEW_H))
+        # 動態背景：天空 → 視差山景 → 前景地面 → 暗紗
+        self.screen.blit(self.full_sky, (0, 0))
+        cam = self.t * 70.0
+        R.draw_parallax(self.screen, cam, cfg.SCREEN_H, self.t, False)
+        R.draw_menu_ground(self.screen, cam, cfg.SCREEN_H * 0.88)
+        R.draw_vignette(self.screen)
         veil = pygame.Surface((cfg.SCREEN_W, cfg.SCREEN_H), pygame.SRCALPHA)
-        veil.fill((8, 10, 18, 165))
+        veil.fill((8, 10, 18, 150))
         self.screen.blit(veil, (0, 0))
 
+        R.blit_glow(self.screen, (60, 48, 12), cfg.SCREEN_W // 2, 70, 220)
         R.draw_text(self.screen, "MOTO DUEL", 76, cfg.SCREEN_W // 2, 32, cfg.C_GOLD, center=True)
         R.draw_text(self.screen, "越野機車對決　單人 / 雙人", 26, cfg.SCREEN_W // 2, 106,
                     cfg.C_WHITE, center=True)
@@ -698,10 +736,14 @@ class Game:
         for i, label in enumerate(MENU_ITEMS):
             sel = i == self.menu_index
             box = pygame.Rect(mx, my + i * 62, 480, 52)
-            pygame.draw.rect(self.screen, (26, 30, 48) if sel else (16, 18, 28), box,
-                             border_radius=10)
-            pygame.draw.rect(self.screen, cfg.C_GOLD if sel else (46, 50, 66), box,
-                             3 if sel else 2, border_radius=10)
+            self.screen.blit(R.panel(box.w, box.h,
+                                     (44, 40, 24) if sel else (26, 30, 46),
+                                     (20, 18, 12) if sel else (12, 14, 24),
+                                     215, cfg.C_GOLD if sel else (56, 62, 84)),
+                             box.topleft)
+            if sel:
+                R.blit_glow(self.screen, (44, 34, 6), box.centerx, box.centery, 150)
+                pygame.draw.rect(self.screen, cfg.C_GOLD, box, 2, border_radius=10)
             col = cfg.C_GOLD if sel else cfg.C_WHITE
             R.draw_text(self.screen, ("> " if sel else "   ") + label, 26,
                         mx + 18, my + i * 62 + 12, col)
@@ -723,9 +765,8 @@ class Game:
              ["↑　油門", "↓　煞車", "← / →　後傾 / 前傾", "/　氮氣"]),
         ]
         for x, color, title, lines in cols:
-            pygame.draw.rect(self.screen, (14, 16, 26), (x - 18, 168, 272, 190),
-                             border_radius=12)
-            pygame.draw.rect(self.screen, color, (x - 18, 168, 272, 190), 3, border_radius=12)
+            self.screen.blit(R.panel(272, 190, (26, 30, 46), (12, 14, 24), 215, color),
+                             (x - 18, 168))
             R.draw_text(self.screen, title, 24, x, 180, color)
             for k, line in enumerate(lines):
                 R.draw_text(self.screen, line, 19, x, 218 + k * 32, cfg.C_WHITE)
@@ -759,7 +800,12 @@ class Game:
                     cfg.SCREEN_W // 2, 664, cfg.C_DIM, center=True)
 
     def draw_achievements(self) -> None:
-        self.screen.fill(cfg.C_PANEL)
+        self.screen.blit(self.full_sky, (0, 0))
+        R.draw_parallax(self.screen, self.t * 30.0, cfg.SCREEN_H, self.t, False)
+        veil = pygame.Surface((cfg.SCREEN_W, cfg.SCREEN_H), pygame.SRCALPHA)
+        veil.fill((8, 10, 18, 200))
+        self.screen.blit(veil, (0, 0))
+        R.blit_glow(self.screen, (56, 44, 10), cfg.SCREEN_W // 2, 52, 200)
         R.draw_text(self.screen, "成就", 48, cfg.SCREEN_W // 2, 26, cfg.C_GOLD, center=True)
         unlocked = self.save.unlocked
         R.draw_text(self.screen, f"已解鎖 {len(unlocked)} / {len(ACHIEVEMENTS)}",
@@ -770,17 +816,21 @@ class Game:
             y = 124 + row_i * 66
             got = ach.key in unlocked
             box = pygame.Rect(x, y, 570, 58)
-            pygame.draw.rect(self.screen, (24, 28, 44) if got else (18, 20, 30), box,
-                             border_radius=10)
-            pygame.draw.rect(self.screen, cfg.C_GOLD if got else (46, 50, 66), box, 2,
-                             border_radius=10)
+            self.screen.blit(R.panel(box.w, box.h,
+                                     (46, 42, 26) if got else (24, 27, 40),
+                                     (18, 17, 12) if got else (13, 15, 24),
+                                     222, cfg.C_GOLD if got else (46, 50, 66)),
+                             box.topleft)
             icon = "★" if got else "☆"
+            if got:
+                R.blit_glow(self.screen, (48, 38, 8), x + 30, y + 28, 54)
             R.draw_text(self.screen, icon, 30, x + 16, y + 12,
                         cfg.C_GOLD if got else (70, 74, 92))
             R.draw_text(self.screen, ach.name, 22, x + 58, y + 6,
                         cfg.C_WHITE if got else cfg.C_DIM)
             R.draw_text(self.screen, ach.desc, 18, x + 58, y + 32,
                         cfg.C_DIM if got else (86, 90, 110))
+        R.draw_vignette(self.screen)
         R.draw_text(self.screen, "[空白鍵 / A / ESC] 返回", 22, cfg.SCREEN_W // 2,
                     cfg.SCREEN_H - 36, cfg.C_GOLD, center=True)
 
@@ -795,11 +845,12 @@ class Game:
         veil.fill((6, 8, 14, 225))
         self.screen.blit(veil, (0, 0))
         board = pygame.Rect(cfg.SCREEN_W // 2 - 430, 8, 860, cfg.SCREEN_H - 72)
-        pygame.draw.rect(self.screen, (14, 17, 28), board, border_radius=16)
-        pygame.draw.rect(self.screen, (52, 58, 80), board, 3, border_radius=16)
+        self.screen.blit(R.panel(board.w, board.h, (30, 34, 52), (12, 14, 24), 245,
+                                 (70, 78, 104)), board.topleft)
         winner = self.round_result["winner"] if self.round_result else None
         title = "平手！" if winner is None else f"{self.pname(winner)} 拿下本回合！"
         col = cfg.C_GOLD if winner is None else cfg.PLAYER_COLORS[winner]
+        R.blit_glow(self.screen, R.shade(col, 0.22), cfg.SCREEN_W // 2, 66, 240)
         R.draw_text(self.screen, title, 52, cfg.SCREEN_W // 2, 40, col, center=True)
         R.draw_text(self.screen,
                     f"回合 {self.round_index + 1}/{cfg.ROUNDS_PER_MATCH}　"
@@ -807,27 +858,36 @@ class Game:
                     24, cfg.SCREEN_W // 2, 104, cfg.C_DIM, center=True)
 
         rows = [
-            ("完賽時間", lambda s: f"{s.finish_time:.2f}s" if s.finish_time else "未完賽"),
-            ("金幣", lambda s: str(s.coins)),
-            ("翻滾", lambda s: str(s.flips)),
-            ("墜毀", lambda s: str(s.crashes)),
-            ("最高時速", lambda s: f"{s.top_speed:.0f} km/h"),
-            ("滯空時間", lambda s: f"{s.air_time:.1f}s"),
-            ("加速板", lambda s: str(s.boosts)),
-            ("本回合分數", lambda s: f"{s.score:,}"),
+            ("完賽時間", lambda s: f"{s.finish_time:.2f}s" if s.finish_time else "未完賽",
+             lambda s: -(s.finish_time or 9e9)),
+            ("金幣", lambda s: str(s.coins), lambda s: s.coins),
+            ("翻滾", lambda s: str(s.flips), lambda s: s.flips),
+            ("墜毀", lambda s: str(s.crashes), lambda s: -s.crashes),
+            ("最高時速", lambda s: f"{s.top_speed:.0f} km/h", lambda s: s.top_speed),
+            ("滯空時間", lambda s: f"{s.air_time:.1f}s", lambda s: s.air_time),
+            ("加速板", lambda s: str(s.boosts), lambda s: s.boosts),
+            ("本回合分數", lambda s: f"{s.score:,}", lambda s: s.score),
         ]
         x0, x1, x2 = cfg.SCREEN_W // 2, cfg.SCREEN_W // 2 - 300, cfg.SCREEN_W // 2 + 300
-        R.draw_text(self.screen, self.pname(0), 26, x1, 150, cfg.PLAYER_COLORS[0],
-                    center=True)
-        R.draw_text(self.screen, self.pname(1), 26, x2, 150, cfg.PLAYER_COLORS[1],
-                    center=True)
-        for i, (label, fn) in enumerate(rows):
-            y = 192 + i * 38
+        for xi, pi in ((x1, 0), (x2, 1)):
+            pc = cfg.PLAYER_COLORS[pi]
+            R.draw_text(self.screen, self.pname(pi), 26, xi, 150, pc, center=True)
+            pygame.draw.line(self.screen, R.shade(pc, 0.55),
+                             (xi - 96, 184), (xi + 96, 184), 2)
+        s0, s1 = self.bikes[0].stats, self.bikes[1].stats
+        for i, (label, fn, key) in enumerate(rows):
+            y = 196 + i * 38
+            if i % 2 == 0:
+                strip = pygame.Surface((760, 34), pygame.SRCALPHA)
+                strip.fill((255, 255, 255, 10))
+                self.screen.blit(strip, (x0 - 380, y - 4))
             R.draw_text(self.screen, label, 22, x0, y, cfg.C_DIM, center=True)
-            R.draw_text(self.screen, fn(self.bikes[0].stats), 22, x1, y, cfg.C_WHITE,
-                        center=True)
-            R.draw_text(self.screen, fn(self.bikes[1].stats), 22, x2, y, cfg.C_WHITE,
-                        center=True)
+            k0, k1 = key(s0), key(s1)
+            for xi, st, win in ((x1, s0, k0 > k1), (x2, s1, k1 > k0)):
+                if win:
+                    R.blit_glow(self.screen, (30, 24, 5), xi, y + 13, 76)
+                R.draw_text(self.screen, fn(st), 23 if win else 22, xi, y,
+                            cfg.C_GOLD if win else cfg.C_WHITE, center=True)
 
         if self.new_achievements:
             R.draw_text(self.screen, "解鎖成就", 24, cfg.SCREEN_W // 2, 508, cfg.C_GOLD,
@@ -843,24 +903,54 @@ class Game:
                     cfg.SCREEN_W // 2, cfg.SCREEN_H - 44, cfg.C_GOLD, center=True)
 
     def draw_match_end(self) -> None:
-        self.screen.fill(cfg.C_PANEL)
         champ = getattr(self, "match_champion", 0)
-        R.draw_text(self.screen, "對決結束", 56, cfg.SCREEN_W // 2, 80, cfg.C_WHITE,
+        ccol = cfg.PLAYER_COLORS[champ]
+        self.screen.blit(self.full_sky, (0, 0))
+        cam = self.t * 40.0
+        R.draw_parallax(self.screen, cam, cfg.SCREEN_H, self.t, False)
+        R.draw_menu_ground(self.screen, cam, cfg.SCREEN_H * 0.92)
+        veil = pygame.Surface((cfg.SCREEN_W, cfg.SCREEN_H), pygame.SRCALPHA)
+        veil.fill((8, 10, 18, 170))
+        self.screen.blit(veil, (0, 0))
+
+        # 慶祝彩帶
+        for i in range(60):
+            sx = (i * 137.5) % cfg.SCREEN_W
+            fall = (self.t * (60 + (i % 7) * 22) + i * 53) % (cfg.SCREEN_H + 60)
+            sy = fall - 30
+            sw = 4 + i % 3
+            ang = self.t * 3 + i
+            col = (ccol, cfg.C_GOLD, cfg.C_WHITE, cfg.C_GREEN)[i % 4]
+            pygame.draw.line(self.screen, col, (sx, sy),
+                             (sx + math.cos(ang) * sw, sy + math.sin(ang) * sw + 8), 3)
+
+        R.blit_glow(self.screen, R.shade(ccol, 0.28), cfg.SCREEN_W // 2, 200, 400)
+        R.draw_text(self.screen, "對決結束", 50, cfg.SCREEN_W // 2, 70, cfg.C_WHITE,
                     center=True)
-        R.draw_text(self.screen, f"{self.pname(champ)} 獲勝！", 72,
-                    cfg.SCREEN_W // 2, 180, cfg.PLAYER_COLORS[champ], center=True)
+        pulse = 1.0 + math.sin(self.t * 3.4) * 0.035
+        R.draw_text(self.screen, f"{self.pname(champ)} 獲勝！", int(74 * pulse),
+                    cfg.SCREEN_W // 2, 150, ccol, center=True)
+
+        n_ach = len(self.new_achievements[-3:]) if self.new_achievements else 0
+        board = pygame.Rect(cfg.SCREEN_W // 2 - 320, 268, 640, 124 + n_ach * 28 + 22)
+        self.screen.blit(R.panel(board.w, board.h, (30, 34, 52), (12, 14, 24), 225,
+                                 R.shade(ccol, 0.7)), board.topleft)
         R.draw_text(self.screen,
                     f"回合比分　{self.round_wins[0]} - {self.round_wins[1]}",
-                    34, cfg.SCREEN_W // 2, 290, cfg.C_GOLD, center=True)
+                    34, cfg.SCREEN_W // 2, 288, cfg.C_GOLD, center=True)
         R.draw_text(self.screen,
                     f"總積分　{self.pname(0)} {self.match_scores[0]:,}　　"
                     f"{self.pname(1)} {self.match_scores[1]:,}",
-                    28, cfg.SCREEN_W // 2, 350, cfg.C_GREEN, center=True)
+                    26, cfg.SCREEN_W // 2, 344, cfg.C_GREEN, center=True)
         if self.new_achievements:
             for k, (pi, ach) in enumerate(self.new_achievements[-3:]):
                 R.draw_text(self.screen, f"★ {self.pname(pi)}：{ach.name}",
-                            22, cfg.SCREEN_W // 2, 420 + k * 30,
+                            22, cfg.SCREEN_W // 2, 392 + k * 28,
                             cfg.PLAYER_COLORS[pi], center=True)
+        else:
+            R.draw_text(self.screen, "感謝遊玩！", 22, cfg.SCREEN_W // 2, 386,
+                        cfg.C_DIM, center=True)
+        R.draw_vignette(self.screen)
         R.draw_text(self.screen, "[空白鍵] 回主選單", 30, cfg.SCREEN_W // 2,
                     cfg.SCREEN_H - 80, cfg.C_GOLD, center=True)
 

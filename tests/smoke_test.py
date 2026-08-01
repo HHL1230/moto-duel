@@ -409,6 +409,25 @@ def test_render_frames() -> None:
     check(True, "單人賽中畫面連續 300 幀繪製正常")
     check(game.bikes[1].x > 300, "單人模式電腦對手會前進")
 
+    # 回合結算 / 對決結束畫面
+    for b in game.bikes:
+        b.x = cfg.TRACK_LENGTH - 40
+        b.y = game.terrain.height_at(b.x) - cfg.RIDE_HEIGHT
+        b.vx = 600
+    for _ in range(1200):
+        game.update(1 / 60)
+        if game.state == 3:
+            break
+    check(game.state == 3, "可進入回合結算狀態")
+    game.draw()
+    check(True, "回合結算畫面繪製正常")
+    game.state = 4
+    game.match_champion = 0
+    for _ in range(30):
+        game.update(1 / 60)
+        game.draw()
+    check(True, "對決結束畫面繪製正常")
+
 
 def test_menu_navigation() -> None:
     print("\n== 選單操作 ==")

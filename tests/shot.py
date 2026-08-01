@@ -57,6 +57,26 @@ def main() -> None:
         g.update(1 / 60)
     g.draw()
     pygame.image.save(g.screen, os.path.join(OUT, "04_split_race.png"))
+
+    # 暫停疊層
+    g.on_key(pygame.K_p)
+    g.draw()
+    pygame.image.save(g.screen, os.path.join(OUT, "05_paused.png"))
+    g.on_key(pygame.K_p)
+
+    # 成就一覽
+    g.on_key(pygame.K_ESCAPE)
+    g.state = 5  # ACHIEVE_VIEW
+    g.draw()
+    pygame.image.save(g.screen, os.path.join(OUT, "06_achievements.png"))
+
+    # 對決結束
+    g.state = 4  # MATCH_END
+    g.match_champion = 0
+    g.round_wins = [2, 1]
+    g.match_scores = [18420, 15980]
+    g.draw()
+    pygame.image.save(g.screen, os.path.join(OUT, "07_match_end.png"))
     print("saved to", OUT)
 
 

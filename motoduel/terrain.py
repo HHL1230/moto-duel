@@ -190,3 +190,24 @@ class Terrain:
             else:
                 break
         return best
+
+    def mini_profile(self, n: int = 90) -> list[float]:
+        """賽道高度剖面（0=最低, 1=最高），供 HUD 迷你地圖使用；結果快取。
+
+        每格取多點平均，避免 22000px 的賽道被稀疏取樣成鋸齒雜訊。
+        """
+        n = max(8, int(n))
+        cached = getattr(self, "_mini_cache", None)
+        if cached is not None and cached[0] == n:
+            return cached[1]
+        seg = cfg.TRACK_LENGTH / (n - 1)
+        ys = []
+        for i in range(n):
+            cx = seg * i
+            samples = [self.height_at(cx + (k - 10) * seg * 0.15) for k in range(21)]
+            ys.append(sum(samples) / len(samples))
+        lo, hi = min(ys), max(ys)
+        span = max(1.0, hi - lo)
+        prof = [(hi - y) / span for y in ys]     # y 越小(越高) → 值越大
+        self._mini_cache = (n, prof)
+        return prof
