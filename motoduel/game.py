@@ -23,10 +23,31 @@ MENU_ITEMS = ["單人模式（對戰電腦）", "雙人模式（同機對戰）"
 
 CONTROLS = [
     # (label, gas, brake, lean_back, lean_fwd, nitro)
-    ("玩家 1", pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_LCTRL),
+    ("玩家 1", pygame.K_t, pygame.K_g, pygame.K_f, pygame.K_h, pygame.K_LCTRL),
     ("玩家 2", pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_SLASH),
 ]
-NITRO_ALT = {0: (), 1: (pygame.K_KP_DIVIDE,)}
+
+
+def _kp(*names: str) -> tuple[int, ...]:
+    """取得數字鍵盤按鍵常數（不同 pygame 版本命名可能為 K_KP8 或 K_KP_8）。"""
+    out = []
+    for n in names:
+        code = getattr(pygame, f"K_KP{n}", None) or getattr(pygame, f"K_KP_{n}", None)
+        if code:
+            out.append(code)
+    return tuple(out)
+
+
+# 每位玩家各動作的備援按鍵
+CONTROL_ALT = [
+    {"gas": (), "brake": (), "lean_back": (), "lean_fwd": (),
+     "nitro": (pygame.K_b,)},
+    {"gas": _kp("8"), "brake": _kp("5", "2"),
+     "lean_back": _kp("4"), "lean_fwd": _kp("6"),
+     "nitro": _kp("DIVIDE", "0")},
+]
+# 向後相容：僅氮氣備援鍵
+NITRO_ALT = {i: CONTROL_ALT[i]["nitro"] for i in range(2)}
 
 FINISH_GRACE = 15.0     # 首位完賽後，另一位玩家的寬限秒數
 
@@ -206,10 +227,12 @@ class Game:
             self.on_key(pygame.K_SPACE)
 
     def on_key(self, key: int, mod: int = 0) -> None:
-        # F / F11 / Alt+Enter 切換全螢幕
-        if key in (pygame.K_f, pygame.K_F11) or (
+        # F11 / Alt+Enter 隨時可切換全螢幕；
+        # F 在賽中是玩家 1 的後傾鍵，因此僅在非賽中狀態才用來切換全螢幕。
+        in_race = self.state in (COUNTDOWN, RACING)
+        if key == pygame.K_F11 or (
             key in (pygame.K_RETURN, pygame.K_KP_ENTER) and mod & pygame.KMOD_ALT
-        ):
+        ) or (key == pygame.K_f and not in_race):
             self.toggle_fullscreen()
             self.audio.play("ui")
             return
@@ -238,7 +261,7 @@ class Game:
         if self.state == MENU:
             self.menu_key(key)
         elif self.state == ACHIEVE_VIEW:
-            if key in (pygame.K_a, pygame.K_SPACE):
+            if key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.audio.play("ui")
                 self.state = self.prev_state
         elif self.state in (COUNTDOWN, RACING):
@@ -268,17 +291,17 @@ class Game:
                 self.state = MENU
 
     def menu_key(self, key: int) -> None:
-        if key in (pygame.K_UP, pygame.K_w):
+        if key in (pygame.K_UP, pygame.K_t):
             self.menu_index = (self.menu_index - 1) % len(MENU_ITEMS)
             self.audio.play("ui")
-        elif key in (pygame.K_DOWN, pygame.K_s):
+        elif key in (pygame.K_DOWN, pygame.K_g):
             self.menu_index = (self.menu_index + 1) % len(MENU_ITEMS)
             self.audio.play("ui")
-        elif key in (pygame.K_LEFT, pygame.K_a) and self.menu_index == 0:
+        elif key == pygame.K_LEFT and self.menu_index == 0:
             i = DIFFICULTY_ORDER.index(self.difficulty)
             self.difficulty = DIFFICULTY_ORDER[(i - 1) % len(DIFFICULTY_ORDER)]
             self.audio.play("ui")
-        elif key in (pygame.K_RIGHT, pygame.K_d) and self.menu_index == 0:
+        elif key in (pygame.K_RIGHT, pygame.K_h) and self.menu_index == 0:
             i = DIFFICULTY_ORDER.index(self.difficulty)
             self.difficulty = DIFFICULTY_ORDER[(i + 1) % len(DIFFICULTY_ORDER)]
             self.audio.play("ui")
@@ -299,13 +322,17 @@ class Game:
         keys = pygame.key.get_pressed()
         out = []
         for i, (_, gas, brake, lb, lf, nitro) in enumerate(CONTROLS):
-            nitro_down = keys[nitro] or any(keys[k] for k in NITRO_ALT[i])
+            alt = CONTROL_ALT[i]
+
+            def down(primary: int, name: str, _alt=alt) -> bool:
+                return bool(keys[primary]) or any(keys[k] for k in _alt[name])
+
             out.append({
-                "gas": keys[gas],
-                "brake": keys[brake],
-                "lean_back": keys[lb],
-                "lean_fwd": keys[lf],
-                "nitro": nitro_down,
+                "gas": down(gas, "gas"),
+                "brake": down(brake, "brake"),
+                "lean_back": down(lb, "lean_back"),
+                "lean_fwd": down(lf, "lean_fwd"),
+                "nitro": down(nitro, "nitro"),
             })
         if self.mode == MODE_1P:
             # 單人模式：玩家 1 沿用方向鍵之外的配置，並額外接受方向鍵操作
@@ -759,26 +786,29 @@ class Game:
 
         # ---- 操作說明
         cols = [
-            (700, cfg.PLAYER_COLORS[0], "玩家 1",
-             ["W / ↑　油門", "S / ↓　煞車", "A D / ← →　後傾 前傾", "左Ctrl / 右Ctrl　氮氣"]),
-            (990, cfg.PLAYER_COLORS[1], "玩家 2（雙人）",
-             ["↑　油門", "↓　煞車", "← / →　後傾 / 前傾", "/　氮氣"]),
+            (694, cfg.PLAYER_COLORS[0], "玩家 1",
+             ["T / ↑　油門", "G / ↓　煞車", "F H / ← →　後傾 前傾",
+              "左Ctrl / B　氮氣"]),
+            (984, cfg.PLAYER_COLORS[1], "玩家 2（雙人）",
+             ["↑ / 數字8　油門", "↓ / 數字5　煞車",
+              "← → / 數字4 6　後傾 前傾", "/ 或數字 / 、0　氮氣"]),
         ]
         for x, color, title, lines in cols:
-            self.screen.blit(R.panel(272, 190, (26, 30, 46), (12, 14, 24), 215, color),
+            self.screen.blit(R.panel(286, 190, (26, 30, 46), (12, 14, 24), 215, color),
                              (x - 18, 168))
             R.draw_text(self.screen, title, 24, x, 180, color)
             for k, line in enumerate(lines):
-                R.draw_text(self.screen, line, 19, x, 218 + k * 32, cfg.C_WHITE)
+                R.draw_text(self.screen, line, 18, x, 218 + k * 32, cfg.C_WHITE)
 
         tips = [
-            "空中用左右鍵翻滾可獲得分數與氮氣，落地角度不對會摔車。",
+            "空中按住後傾／前傾鍵可快速翻滾得分並補氮氣。",
+            "放開傾斜鍵後車身會自動校正落地角度。",
             "加速板衝刺、金幣加分、氮氣罐補給、護盾擋一次傷害。",
             "高速撞巨石或尖刺會摔車，減速通過只顛簸扣分。",
             "三回合制對決，取得最多回合勝利者獲勝。",
         ]
         for k, line in enumerate(tips):
-            R.draw_text(self.screen, line, 18, 686, 388 + k * 28, cfg.C_DIM)
+            R.draw_text(self.screen, line, 18, 680, 382 + k * 27, cfg.C_DIM)
 
         d2 = self.save.data
         best = f"{d2['best_time']:.2f}s" if d2.get("best_time") else "—"
@@ -791,13 +821,16 @@ class Game:
         blink = 0.5 + 0.5 * math.sin(self.t * 4)
         col = tuple(int(c * (0.55 + 0.45 * blink)) for c in cfg.C_GOLD)
         R.draw_text(self.screen, "[↑↓] 選擇　[←→] 難度　[空白鍵] 確認　[ESC] 離開",
-                    28, cfg.SCREEN_W // 2, 610, col, center=True)
+                    26, cfg.SCREEN_W // 2, 602, col, center=True)
         mute = "靜音中" if self.audio.muted else "開啟"
         scr = "全螢幕" if self.fullscreen else "視窗"
         R.draw_text(self.screen,
-                    f"賽中：[P] 暫停　[R] 重跑本回合　[M] 音效（{mute}）"
-                    f"　[F] 全螢幕（目前：{scr}）", 18,
-                    cfg.SCREEN_W // 2, 664, cfg.C_DIM, center=True)
+                    f"賽中：[P] 暫停　[R] 重跑本回合　[M] 音效（{mute}）", 18,
+                    cfg.SCREEN_W // 2, 646, cfg.C_DIM, center=True)
+        R.draw_text(self.screen,
+                    f"[F11 / Alt+Enter] 全螢幕（目前：{scr}）"
+                    f"　※ 賽中 F 為玩家 1 後傾鍵，故不切換全螢幕", 18,
+                    cfg.SCREEN_W // 2, 674, cfg.C_DIM, center=True)
 
     def draw_achievements(self) -> None:
         self.screen.blit(self.full_sky, (0, 0))
@@ -831,7 +864,7 @@ class Game:
             R.draw_text(self.screen, ach.desc, 18, x + 58, y + 32,
                         cfg.C_DIM if got else (86, 90, 110))
         R.draw_vignette(self.screen)
-        R.draw_text(self.screen, "[空白鍵 / A / ESC] 返回", 22, cfg.SCREEN_W // 2,
+        R.draw_text(self.screen, "[空白鍵 / ESC] 返回", 22, cfg.SCREEN_W // 2,
                     cfg.SCREEN_H - 36, cfg.C_GOLD, center=True)
 
     # -------------------------------------------------------------- 結算畫面

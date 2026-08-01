@@ -14,7 +14,7 @@ DIFFICULTIES = {
         "throttle": 0.72,
         "nitro_min": 85.0,
         "kp": 5.0,
-        "kd": 0.9,
+        "kd": 2.4,
         "react": 0.16,
         "sloppy": 0.35,      # 空中放棄修正的機率
         "trick": 0.0,        # 主動翻滾傾向
@@ -27,7 +27,7 @@ DIFFICULTIES = {
         "throttle": 0.95,
         "nitro_min": 45.0,
         "kp": 8.0,
-        "kd": 1.3,
+        "kd": 3.2,
         "react": 0.08,
         "sloppy": 0.14,
         "trick": 0.45,
@@ -40,7 +40,7 @@ DIFFICULTIES = {
         "throttle": 1.0,
         "nitro_min": 20.0,
         "kp": 12.0,
-        "kd": 1.7,
+        "kd": 4.0,
         "react": 0.03,
         "sloppy": 0.03,
         "trick": 0.85,
@@ -117,7 +117,35 @@ class AIRider:
         if self.timer <= 0:
             self.timer = self.p["react"]
             self.cmd = self._decide()
+        elif not self.bike.on_ground and not self.doing_trick:
+            # 空中姿態修正需要每幀重算：反應延遲期間持續施加傾斜會嚴重過衝
+            self.cmd = dict(self.cmd)
+            lean = self._air_lean()
+            self.cmd["lean_back"] = lean < 0
+            self.cmd["lean_fwd"] = lean > 0
         return self.cmd
+
+    def _air_lean(self) -> int:
+        """空中姿態控制，回傳 -1 / 0 / +1。
+
+        車體本身在放開傾斜鍵時會自動朝預測落點的地形角度校正（見 entities），
+        因此電腦只在誤差大到自動校正來不及時，才主動施加同向傾斜幫忙加速；
+        其餘時間刻意「放手」，讓自動校正接管——這也和玩家的操作感一致。
+        """
+        b = self.bike
+        p = self.p
+        err = wrap_angle(self.predict_landing() - b.angle)
+        # 剩餘滯空時間內，自動校正是否來得及轉完這個角度
+        t_land = max(0.05, self.time_to_land())
+        need = abs(err) / t_land          # 需要的平均角速度
+        if need < cfg.MAX_ANG_VEL * 0.35:
+            return 0                      # 自動校正綽綽有餘，放手最穩
+        control = err * p["kp"] - b.ang_vel * p["kd"]
+        if control > 2.0:
+            return 1
+        if control < -2.0:
+            return -1
+        return 0
 
     def _decide(self) -> dict:
         b = self.bike
@@ -155,12 +183,13 @@ class AIRider:
 
         # 空中：判斷是否有餘裕做翻滾特技，否則修正落地姿態
         t_land = self.time_to_land()
-        target = self.predict_landing()
-        err = wrap_angle(target - b.angle)
 
-        if self.doing_trick and t_land < 0.5:
+        # 一圈翻滾約需 0.35 秒。策略：滯空足夠才起轉，轉滿整圈就放手，
+        # 讓自動校正接管落地姿態（若時間不夠也提早放手）。
+        if self.doing_trick and (abs(b.air_rotation) >= cfg.TAU or t_land < 0.2):
             self.doing_trick = False
-        elif not self.doing_trick and t_land > 0.95 and self.rng.random() < p["trick"]:
+        elif not self.doing_trick and abs(b.air_rotation) < 0.5 \
+                and t_land > 0.55 and self.rng.random() < p["trick"]:
             self.doing_trick = True
 
         if self.doing_trick:
@@ -171,11 +200,9 @@ class AIRider:
         if self.rng.random() < p["sloppy"]:
             return inp
 
-        control = err * p["kp"] - b.ang_vel * p["kd"]
-        if control > 1.2:
-            inp["lean_fwd"] = True
-        elif control < -1.2:
-            inp["lean_back"] = True
+        lean = self._air_lean()
+        inp["lean_fwd"] = lean > 0
+        inp["lean_back"] = lean < 0
         return inp
 
 

@@ -94,6 +94,7 @@ class Bike:
         self.nitro_active = False
         self.throttle_on = False
         self.lean_input = 0.0       # 騎士重心（-1 後傾 / +1 前傾），供繪製使用
+        self.lean_prev = 0.0        # 上一幀的傾斜輸入，用於偵測「剛按下」
         self.susp_f = 0.0           # 前避震壓縮量 0..1
         self.susp_r = 0.0           # 後避震壓縮量 0..1
         self.smoke_acc = 0.0        # 排氣煙生成累積器
@@ -233,15 +234,26 @@ class Bike:
         # ---- 重力與空中控制
         self.vy += cfg.GRAVITY * dt
         if not self.on_ground:
-            self.ang_vel += lean * cfg.AIR_TORQUE * dt
+            if lean:
+                # 剛按下（或反向）時給一記起轉衝量，避免翻滾遲遲轉不起來；
+                # 已在轉動中時不再追加，以免姿態微調過衝。
+                if lean * self.lean_prev <= 0 and abs(self.ang_vel) < 3.0:
+                    self.ang_vel = lean * cfg.AIR_KICK
+                self.ang_vel += lean * cfg.AIR_TORQUE * dt
+                self.ang_vel *= max(0.0, 1.0 - cfg.AIR_DAMP_ACTIVE * dt)
+            else:
+                # 放開傾斜鍵：主動把車身轉向預測落點的地形角度，方便安全落地
+                target = self.terrain.angle_at(
+                    self.x + self.vx * cfg.AIR_LEVEL_LOOKAHEAD)
+                err = wrap_angle(target - self.angle)
+                self.ang_vel += (err * cfg.AIR_LEVEL_KP
+                                 - self.ang_vel * cfg.AIR_LEVEL_KD) * dt
             self.ang_vel = max(-cfg.MAX_ANG_VEL, min(cfg.MAX_ANG_VEL, self.ang_vel))
-            # 放開方向鍵時快速穩定姿態，讓玩家能調整落地角度
-            damp = cfg.AIR_DAMP_ACTIVE if lean else cfg.AIR_DAMP_IDLE
-            self.ang_vel *= max(0.0, 1.0 - damp * dt)
             self.angle += self.ang_vel * dt
             self.air_rotation += self.ang_vel * dt
             self.air_timer += dt
             self.stats.air_time += dt
+        self.lean_prev = lean
 
         # ---- 位置積分
         self.x += self.vx * dt

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from motoduel import config as cfg          # noqa: E402
 from motoduel.achievements import ACHIEVEMENTS, SaveData  # noqa: E402
 from motoduel.ai import AIRider, DIFFICULTIES, DIFFICULTY_ORDER, make_ai_name  # noqa: E402
-from motoduel.entities import Bike          # noqa: E402
+from motoduel.entities import Bike, wrap_angle  # noqa: E402
 from motoduel.game import Game              # noqa: E402
 from motoduel.terrain import Terrain        # noqa: E402
 
@@ -169,6 +169,52 @@ def test_flips_and_score() -> None:
     check(b.stats.flips >= 1, f"完成翻滾 {b.stats.flips} 次")
     check(b.stats.score >= cfg.SCORE_FLIP, f"翻滾得分 {b.stats.score}")
 
+    # 翻滾速度：一圈應可在 0.7 秒內完成（原本過慢難以在滯空時間內轉完）
+    b2 = Bike(0, terrain)
+    b2.on_ground = False
+    b2.y = terrain.height_at(b2.x) - 900
+    b2.vx, b2.vy = 400, -100
+    t_full = None
+    for i in range(600):
+        b2.update(1 / 60, inp, 0.0)
+        if abs(b2.air_rotation) >= cfg.TAU:
+            t_full = (i + 1) / 60
+            break
+    check(t_full is not None and t_full <= 0.45,
+          f"單圈翻滾耗時 {t_full:.2f}s（需 ≤ 0.45s）")
+
+    # 實戰可行性：一般跳台的滯空時間內應能真的轉完一圈
+    landed_flips = 0
+    for seed in (1, 7, 42):
+        t2 = Terrain(seed)
+        b4 = Bike(0, t2)
+        el = 0.0
+        while el < 130 and b4.x < cfg.TRACK_LENGTH:
+            air = not b4.on_ground
+            b4.update(1 / 60, {"gas": True, "brake": False, "lean_back": False,
+                               "lean_fwd": air and b4.air_timer < 0.30,
+                               "nitro": True}, el)
+            el += 1 / 60
+        landed_flips += b4.stats.flips
+    check(landed_flips >= 30,
+          f"實戰中可完成翻滾（三場共 {landed_flips} 次）")
+
+    # 放開傾斜鍵應自動校正姿態，讓落地角度回到安全範圍
+    b3 = Bike(0, terrain)
+    b3.on_ground = False
+    b3.y = terrain.height_at(b3.x) - 800
+    b3.vx, b3.vy = 380, -80
+    hold = dict(inp)
+    idle = {"gas": False, "brake": False, "lean_back": False, "lean_fwd": False,
+            "nitro": False}
+    for i in range(600):
+        b3.update(1 / 60, hold if i < 24 else idle, 0.0)
+        if b3.on_ground:
+            break
+    err = abs(wrap_angle(b3.angle - terrain.angle_at(b3.x)))
+    check(not b3.crashed and err < cfg.CRASH_ANGLE,
+          f"放開傾斜鍵後可安全落地（角度誤差 {err:.2f} rad）")
+
 
 def test_achievements() -> None:
     print("\n== 成就系統 ==")
@@ -296,13 +342,26 @@ def test_input_events() -> None:
     check(game.state == 0, "一般文字輸入不會誤觸發")
     pygame.event.clear()
 
-    # 按鍵配置：玩家 1 氮氣為左 Ctrl，且雙方按鍵不衝突
-    from motoduel.game import CONTROLS, NITRO_ALT
+    # 按鍵配置：玩家 1 為 TFGH，玩家 2 支援方向鍵與數字鍵盤，雙方不衝突
+    from motoduel.game import CONTROLS, CONTROL_ALT, NITRO_ALT
+    check(CONTROLS[0][1:5] == (pygame.K_t, pygame.K_g, pygame.K_f, pygame.K_h),
+          "玩家 1 操作鍵為 T / G / F / H")
     check(CONTROLS[0][5] == pygame.K_LCTRL, "玩家 1 氮氣鍵為左 Ctrl")
     check(CONTROLS[1][5] == pygame.K_SLASH, "玩家 2 氮氣鍵為 /")
-    p1_keys = set(CONTROLS[0][1:]) | set(NITRO_ALT[0])
-    p2_keys = set(CONTROLS[1][1:]) | set(NITRO_ALT[1])
+
+    def keyset(i: int) -> set[int]:
+        s = set(CONTROLS[i][1:])
+        for v in CONTROL_ALT[i].values():
+            s |= set(v)
+        return s
+
+    p1_keys, p2_keys = keyset(0), keyset(1)
     check(not (p1_keys & p2_keys), "雙人模式兩位玩家按鍵無衝突")
+    for name, code in (("8", pygame.K_KP8), ("5", pygame.K_KP5),
+                       ("4", pygame.K_KP4), ("6", pygame.K_KP6),
+                       ("/", pygame.K_KP_DIVIDE)):
+        check(code in p2_keys, f"玩家 2 可用數字鍵盤 {name}")
+    check(set(NITRO_ALT[1]) <= p2_keys, "NITRO_ALT 相容欄位仍可用")
 
 
 def test_display_mode() -> None:
@@ -328,11 +387,22 @@ def test_display_mode() -> None:
     check(game.fullscreen is False, "F11 可切回視窗模式")
     check(game.save.data["fullscreen"] is False, "視窗偏好已寫入存檔")
 
-    # F 鍵同樣可切換
+    # F 鍵在非賽中可切換全螢幕
+    game.state = 0
     game.on_key(pygame.K_f)
-    check(game.fullscreen is True, "F 可切換到全螢幕")
+    check(game.fullscreen is True, "非賽中 F 可切換到全螢幕")
     game.on_key(pygame.K_f)
-    check(game.fullscreen is False, "F 可切回視窗模式")
+    check(game.fullscreen is False, "非賽中 F 可切回視窗模式")
+
+    # 賽中 F 屬於玩家 1 操作鍵，不可切換全螢幕
+    game.state = 2  # RACING
+    game.on_key(pygame.K_f)
+    check(game.fullscreen is False, "賽中 F 不會誤切全螢幕（為玩家 1 後傾鍵）")
+    game.on_key(pygame.K_F11)
+    check(game.fullscreen is True, "賽中 F11 仍可切換全螢幕")
+    game.on_key(pygame.K_F11)
+    check(game.fullscreen is False, "賽中 F11 可切回視窗")
+    game.state = 0
 
     # Alt+Enter 亦可切換，且不會被誤判為選單確認
     game.state = 0
@@ -353,12 +423,15 @@ def test_display_mode() -> None:
     game.on_key(pygame.K_m)
     check(game.save.data["muted"] is False, "取消靜音已寫入存檔")
 
-    # F 鍵不可與任一玩家操作鍵衝突
-    from motoduel.game import CONTROLS, NITRO_ALT
+    # 賽中 F11 不可與任一玩家操作鍵衝突
+    from motoduel.game import CONTROLS, CONTROL_ALT
     all_keys = set()
     for i in range(2):
-        all_keys |= set(CONTROLS[i][1:]) | set(NITRO_ALT[i])
-    check(pygame.K_f not in all_keys, "F 鍵不與玩家操作鍵衝突")
+        all_keys |= set(CONTROLS[i][1:])
+        for v in CONTROL_ALT[i].values():
+            all_keys |= set(v)
+    check(pygame.K_F11 not in all_keys, "F11 不與玩家操作鍵衝突")
+    check(pygame.K_f in all_keys, "F 為玩家 1 操作鍵（賽中不切全螢幕）")
 
     # 存檔可讀回並於下次啟動套用
     game.save.data["fullscreen"] = True
